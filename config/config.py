@@ -1,0 +1,41 @@
+import os
+from pathlib import Path
+from dotenv import load_dotenv
+import logging
+
+# Load environment variables from .env if present
+load_dotenv()
+
+# Base project directory
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Network monitoring
+NETWORK_INTERFACE = os.getenv("NETWORK_INTERFACE", "auto")
+
+# Directories
+_zeek_log_dir = os.getenv("ZEEK_LOG_DIR", "./data/zeek")
+ZEEK_LOG_DIR = Path(BASE_DIR / _zeek_log_dir).resolve()
+
+_event_output_dir = os.getenv("EVENT_OUTPUT_DIR", "./data/events")
+EVENT_OUTPUT_DIR = Path(BASE_DIR / _event_output_dir).resolve()
+
+# Retention & Rotation
+EVENT_RETENTION_MINUTES = int(os.getenv("EVENT_RETENTION_MINUTES", "10"))
+EVENT_ROTATION_MINUTES = int(os.getenv("EVENT_ROTATION_MINUTES", "15"))
+
+# Logging
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+
+def ensure_directories():
+    """Ensure that required directories exist."""
+    ZEEK_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    EVENT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+def setup_logging():
+    """Configure basic logging for the application."""
+    logging.basicConfig(
+        level=getattr(logging, LOG_LEVEL, logging.INFO),
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+    )
+    return logging.getLogger("NetworkMonitor")
