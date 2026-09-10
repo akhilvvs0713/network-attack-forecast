@@ -2,3 +2,5 @@ python-dotenv
 pytest
 cicflowmeter
 scapy
+redis>=5.0,<7.0
+python-dateutil

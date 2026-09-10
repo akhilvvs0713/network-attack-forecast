@@ -34,6 +34,13 @@ CIC_ROTATION_MINUTES = int(os.getenv("CIC_ROTATION_MINUTES", "1"))
 # Logging
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
+# Redis Configuration
+REDIS_HOST = os.getenv("REDIS_HOST", "127.0.0.1")
+REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
+REDIS_DB = int(os.getenv("REDIS_DB", "0"))
+REDIS_FLOW_KEY = os.getenv("REDIS_FLOW_KEY", "cic:flows")
+REDIS_RETENTION_SECONDS = int(os.getenv("REDIS_RETENTION_SECONDS", "300"))
+
 def ensure_directories():
     """Ensure that required directories exist."""
     ZEEK_LOG_DIR.mkdir(parents=True, exist_ok=True)

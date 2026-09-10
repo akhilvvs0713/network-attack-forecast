@@ -92,6 +92,39 @@ def main():
         fields=args.fields,
         verbose=args.verbose,
     )
+    # Add the project root to sys.path so we can import internal modules
+    project_root = __import__("pathlib").Path(__file__).resolve().parent.parent.parent
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
+
+    from src.buffer.redis_buffer import RedisFlowBuffer
+
+    # ---------------------------------------------------------
+    # Dual Output Adapter: CSV + Redis
+    # ---------------------------------------------------------
+    redis_buffer = RedisFlowBuffer()
+    original_writer = session.output_writer
+
+    class DualWriter:
+        def __init__(self, primary, redis_buf):
+            self.primary = primary
+            self.redis_buf = redis_buf
+
+        def write(self, data: dict) -> None:
+            # 1. Write to original destination (e.g. CSV archive)
+            if self.primary:
+                self.primary.write(data)
+            # 2. Write to Redis rolling buffer
+            try:
+                self.redis_buf.add_flow(data)
+            except Exception as e:
+                # Fail gracefully if Redis is down, preserve CSV
+                import logging
+                logging.getLogger("DualWriter").error(f"Redis write failed: {e}")
+
+    session.output_writer = DualWriter(original_writer, redis_buffer)
+    # ---------------------------------------------------------
+
     # Make the sniffer thread a daemon so it cannot block process exit
     # if it hangs on a blocking socket recv after stop() is called.
     sniffer.daemon = True
@@ -120,11 +153,11 @@ def main():
         if hasattr(session, "_gc_stop"):
             session._gc_stop.set()
             session._gc_thread.join(timeout=2.0)
-        
+
         # Give the sniffer thread a bounded time to exit gracefully,
         # but don't block indefinitely.
         sniffer.join(timeout=3.0)
-        
+
         # Most critical step: flush the CSV to disk
         session.flush_flows()
 

@@ -98,6 +98,33 @@ Files are named: `flows_YYYY-MM-DD_HH-MM.csv`
 
 The CSV contains 80+ CICFlowMeter feature columns including Flow ID, Source/Destination IP and Port, Protocol, Flow Duration, packet/byte counts, inter-arrival times, flag counts, and statistical features — directly compatible with the CSE-CIC-IDS2018 dataset format.
 
+## Redis Rolling Buffer
+
+While the CSV logs remain the permanent historical archive, the project uses **Redis** as a short-lived working memory for recent traffic.
+
+### Why Redis?
+To perform real-time ML inference, the system needs fast, time-ordered access to the most recent network flows without continuously re-reading large CSV files from disk. Redis provides an efficient in-memory sliding window using a Sorted Set.
+
+### Architecture
+Flows are inserted simultaneously into the CSV archive and the Redis rolling buffer:
+```text
+Redis (recent raw flows)
+        |
+        v
+1-minute aggregation (Future)
+        |
+        v
+S(t-4), S(t-3), S(t-2), S(t-1), S(t)
+        |
+        v
+LSTM World Model (Future)
+```
+
+### Design and Retention
+- **Sorted Set:** Each flow is serialized as JSON and stored in a Redis Sorted Set (`cic:flows`) scored by its actual Unix event timestamp.
+- **Timestamp-Based Retention:** The buffer retains exactly the last `REDIS_RETENTION_SECONDS` (default: 300 seconds / 5 minutes) of traffic relative to the latest inserted flow. It automatically drops older traffic.
+- **Conceptual Distinction:** The 5-minute Redis retention window is *not* the LSTM's 5-step sequence (`SEQ_LEN=5`). The Redis buffer simply holds raw flows for the past N minutes. A future aggregation layer will read these raw flows, aggregate them into 1-minute state vectors, and form the 5-step sequences expected by the model.
+
 ## Directory Structure
 
 ```text
