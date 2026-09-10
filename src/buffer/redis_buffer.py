@@ -65,9 +65,17 @@ class RedisFlowBuffer:
         except (ValueError, TypeError):
             pass
 
+        import re
+        ts_str = str(ts_val).strip()
         try:
-            # Parse string dates common in CICFlowMeter (e.g. 15/02/2018 08:35:18)
-            dt = date_parser.parse(str(ts_val), dayfirst=True)
+            # ISO-like format: YYYY-MM-DD...
+            if re.match(r"^\d{4}-\d{2}-\d{2}", ts_str):
+                dt = date_parser.parse(ts_str, dayfirst=False)
+            # Legacy CICFlowMeter format: DD/MM/YYYY...
+            elif re.match(r"^\d{1,2}/\d{1,2}/\d{4}", ts_str):
+                dt = date_parser.parse(ts_str, dayfirst=True)
+            else:
+                dt = date_parser.parse(ts_str)
             return dt.timestamp()
         except Exception as e:
             logger.debug(f"Failed to parse timestamp '{ts_val}', falling back to current time: {e}")

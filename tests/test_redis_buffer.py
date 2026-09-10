@@ -169,6 +169,8 @@ def test_redis_failure_handled_cleanly(mock_zadd, test_key):
     with patch("redis.Redis.zcard", side_effect=redis.RedisError("Connection lost")):
         assert buffer.count() == 0
 
+from datetime import datetime
+
 def test_timestamp_parsing_fallback():
     buffer = RedisFlowBuffer(key="test")
     # Missing timestamp
@@ -178,8 +180,45 @@ def test_timestamp_parsing_fallback():
     # Unparseable string
     ts2 = buffer._parse_timestamp("not_a_date")
     assert abs(time.time() - ts2) < 2.0
+
+def test_timestamp_parsing_iso_format():
+    """Verify ISO format YYYY-MM-DD is not mangled by dayfirst=True."""
+    buffer = RedisFlowBuffer(key="test")
     
-    # Explicit CICFlowMeter string format
-    ts3 = buffer._parse_timestamp("15/02/2018 08:35:18")
-    # Verify it parses properly (won't throw)
-    assert isinstance(ts3, float)
+    # 2026-09-10 -> September 10, 2026
+    ts = buffer._parse_timestamp("2026-09-10 17:51:52")
+    dt = datetime.fromtimestamp(ts)
+    
+    assert dt.year == 2026
+    assert dt.month == 9
+    assert dt.day == 10
+    
+    # Fail if it parsed as October 9
+    assert dt.month != 10
+    assert dt.day != 9
+
+def test_timestamp_parsing_month_boundary():
+    """Verify month boundary."""
+    buffer = RedisFlowBuffer(key="test")
+    ts1 = buffer._parse_timestamp("2026-09-30 23:59:59")
+    ts2 = buffer._parse_timestamp("2026-10-01 00:00:01")
+    assert ts2 > ts1
+    assert ts2 - ts1 == 2.0
+
+def test_timestamp_parsing_year_boundary():
+    """Verify year boundary."""
+    buffer = RedisFlowBuffer(key="test")
+    ts1 = buffer._parse_timestamp("2026-12-31 23:59:59")
+    ts2 = buffer._parse_timestamp("2027-01-01 00:00:01")
+    assert ts2 > ts1
+    assert ts2 - ts1 == 2.0
+
+def test_timestamp_parsing_legacy_cic_format():
+    """Verify old CICFlowMeter DD/MM/YYYY parsing."""
+    buffer = RedisFlowBuffer(key="test")
+    ts = buffer._parse_timestamp("15/02/2018 08:35:18")
+    dt = datetime.fromtimestamp(ts)
+    
+    assert dt.year == 2018
+    assert dt.month == 2
+    assert dt.day == 15

@@ -1,0 +1,51 @@
+============================================
+ CICFlowMeter Acceptance Test
+============================================
+ Python:     /home/karthikeya/network-attack-forecast/.venv/bin/python
+ Wrapper:    /home/karthikeya/network-attack-forecast/src/collector/cic_wrapper.py
+ Interface:  lo
+ Duration:   340s
+ Output:     /home/karthikeya/network-attack-forecast/data/cic/flows/test_capture_20260910_180507.csv
+============================================
+
+[Step 1] Checking cicflowmeter installation...
+  ✓ PASS: cicflowmeter installed, wrapper at /home/karthikeya/network-attack-forecast/src/collector/cic_wrapper.py
+[Step 2] Checking interface lo...
+  ✓ PASS: Interface lo exists
+[Step 3] Starting capture for 340s...
+  CICFlowMeter PID: 8396
+  Log file: /home/karthikeya/network-attack-forecast/data/cic/flows/test_capture_20260910_180507.log
+[Step 4] Generating test traffic...
+  -> DNS queries...
+  -> HTTP/HTTPS requests...
+  -> ICMP ping...
+  Waiting for remaining capture time... Press Ctrl+C to stop early.
+
+[Step 5] Stopping capture...
+  Sending SIGINT to CICFlowMeter (PID 8396)...
+  Waiting for flows to flush (this may take up to 10 seconds)...
+
+[Step 6] Validating output CSV...
+
+  File: /home/karthikeya/network-attack-forecast/data/cic/flows/test_capture_20260910_180507.csv
+  Size: 11023 bytes
+  Lines: 16
+
+  ✓ PASS: File has content (11023 bytes)
+  ✓ PASS: File has data rows (15 flows)
+  Checking essential columns...
+  ✓ PASS: Column found: src_ip
+  ✓ PASS: Column found: dst_ip
+  ✓ PASS: Column found: src_port
+  ✓ PASS: Column found: dst_port
+  ✓ PASS: Column found: protocol
+
+  Total columns in output: 82
+  ✓ PASS: Has 82 columns (expected 70+)
+
+============================================
+ RESULTS: 10 passed, 0 failed
+============================================
+
+ All checks passed!
+ Output preserved at: /home/karthikeya/network-attack-forecast/data/cic/flows/test_capture_20260910_180507.csv

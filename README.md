@@ -185,6 +185,13 @@ Run the CICFlowMeter acceptance test:
 sudo ./scripts/test_cic_capture.sh
 ```
 
+Inspect the live Redis rolling buffer:
+```bash
+.venv/bin/python scripts/inspect_redis_buffer.py
+# Or to watch it refresh every 5 seconds:
+.venv/bin/python scripts/inspect_redis_buffer.py --watch
+```
+
 ## Troubleshooting
 
 - **Zeek not installed**: Ensure Zeek is installed via package manager.

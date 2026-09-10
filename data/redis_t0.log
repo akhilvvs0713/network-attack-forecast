@@ -1,0 +1,5 @@
+[*] Connected to Redis at 127.0.0.1:6379
+[*] Inspecting key: cic:flows
+
+--- Buffer Status: cic:flows ---
+Buffer is currently empty.
