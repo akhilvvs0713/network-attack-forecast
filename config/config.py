@@ -19,9 +19,17 @@ ZEEK_LOG_DIR = Path(BASE_DIR / _zeek_log_dir).resolve()
 _event_output_dir = os.getenv("EVENT_OUTPUT_DIR", "./data/events")
 EVENT_OUTPUT_DIR = Path(BASE_DIR / _event_output_dir).resolve()
 
+# CIC directories
+_cic_flow_dir = os.getenv("CIC_FLOW_DIR", "./data/cic/flows")
+CIC_FLOW_DIR = Path(BASE_DIR / _cic_flow_dir).resolve()
+
+_cic_window_dir = os.getenv("CIC_WINDOW_DIR", "./data/cic/windows")
+CIC_WINDOW_DIR = Path(BASE_DIR / _cic_window_dir).resolve()
+
 # Retention & Rotation
 EVENT_RETENTION_MINUTES = int(os.getenv("EVENT_RETENTION_MINUTES", "10"))
 EVENT_ROTATION_MINUTES = int(os.getenv("EVENT_ROTATION_MINUTES", "15"))
+CIC_ROTATION_MINUTES = int(os.getenv("CIC_ROTATION_MINUTES", "1"))
 
 # Logging
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -30,6 +38,8 @@ def ensure_directories():
     """Ensure that required directories exist."""
     ZEEK_LOG_DIR.mkdir(parents=True, exist_ok=True)
     EVENT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    CIC_FLOW_DIR.mkdir(parents=True, exist_ok=True)
+    CIC_WINDOW_DIR.mkdir(parents=True, exist_ok=True)
 
 def setup_logging():
     """Configure basic logging for the application."""

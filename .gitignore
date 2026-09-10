@@ -17,11 +17,14 @@ env/
 # Generated network telemetry
 data/zeek/*
 data/events/*
+data/cic/*
 logs/*
 
 # Keep directory structure
 !data/zeek/.gitkeep
 !data/events/.gitkeep
+!data/cic/flows/.gitkeep
+!data/cic/windows/.gitkeep
 !logs/.gitkeep
 
 # IDE
