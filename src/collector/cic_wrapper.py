@@ -19,12 +19,47 @@ This wrapper reuses the package's argument parser and ``create_sniffer``
 but calls it with **keyword arguments** so the mapping is correct.
 """
 
-import sys
 import argparse
-from cicflowmeter.sniffer import create_sniffer, process_directory, process_directory_merged
+import logging
+import sys
+import uuid
 
+from cicflowmeter.sniffer import (
+    create_sniffer,
+    process_directory,
+    process_directory_merged,
+)
+
+logger = logging.getLogger("TripleWriter")
+
+class TripleWriter:
+    def __init__(self, primary, redis_buf, redis_strm):
+        self.primary = primary
+        self.redis_buf = redis_buf
+        self.redis_strm = redis_strm
+
+    def write(self, data: dict) -> None:
+        # Generate a unified event identity once for all downstream telemetry
+        event_id = str(uuid.uuid4())
+
+        # 1. Write to original destination (e.g. CSV archive)
+        if self.primary:
+            self.primary.write(data)
+
+        # 2. Write to Redis rolling buffer (ZSET)
+        try:
+            self.redis_buf.add_flow(data, event_id=event_id)
+        except Exception as e:
+            logger.error("Redis ZSET write failed: %s", e)
+
+        # 3. Write to Redis Stream
+        try:
+            self.redis_strm.publish_flow(data, event_id=event_id)
+        except Exception as e:
+            logger.error("Redis Stream write failed: %s", e)
 
 def main():
+
     parser = argparse.ArgumentParser(description="CICFlowMeter (bugfix wrapper)")
 
     input_group = parser.add_mutually_exclusive_group(required=True)
@@ -98,31 +133,16 @@ def main():
         sys.path.insert(0, str(project_root))
 
     from src.buffer.redis_buffer import RedisFlowBuffer
+    from src.stream.redis_stream import RedisFlowStream
 
     # ---------------------------------------------------------
-    # Dual Output Adapter: CSV + Redis
+    # Triple Output Adapter: CSV + Redis ZSET + Redis Stream
     # ---------------------------------------------------------
     redis_buffer = RedisFlowBuffer()
+    redis_stream = RedisFlowStream()
     original_writer = session.output_writer
 
-    class DualWriter:
-        def __init__(self, primary, redis_buf):
-            self.primary = primary
-            self.redis_buf = redis_buf
-
-        def write(self, data: dict) -> None:
-            # 1. Write to original destination (e.g. CSV archive)
-            if self.primary:
-                self.primary.write(data)
-            # 2. Write to Redis rolling buffer
-            try:
-                self.redis_buf.add_flow(data)
-            except Exception as e:
-                # Fail gracefully if Redis is down, preserve CSV
-                import logging
-                logging.getLogger("DualWriter").error(f"Redis write failed: {e}")
-
-    session.output_writer = DualWriter(original_writer, redis_buffer)
+    session.output_writer = TripleWriter(original_writer, redis_buffer, redis_stream)
     # ---------------------------------------------------------
 
     # Make the sniffer thread a daemon so it cannot block process exit

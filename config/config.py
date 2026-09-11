@@ -40,6 +40,9 @@ REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 REDIS_DB = int(os.getenv("REDIS_DB", "0"))
 REDIS_FLOW_KEY = os.getenv("REDIS_FLOW_KEY", "cic:flows")
 REDIS_RETENTION_SECONDS = int(os.getenv("REDIS_RETENTION_SECONDS", "300"))
+REDIS_STREAM_KEY = os.getenv("REDIS_STREAM_KEY", "cic:flows:stream")
+REDIS_STREAM_MAXLEN = int(os.getenv("REDIS_STREAM_MAXLEN", "100000"))
+
 
 def ensure_directories():
     """Ensure that required directories exist."""
@@ -48,11 +51,12 @@ def ensure_directories():
     CIC_FLOW_DIR.mkdir(parents=True, exist_ok=True)
     CIC_WINDOW_DIR.mkdir(parents=True, exist_ok=True)
 
+
 def setup_logging():
     """Configure basic logging for the application."""
     logging.basicConfig(
         level=getattr(logging, LOG_LEVEL, logging.INFO),
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S"
+        datefmt="%Y-%m-%d %H:%M:%S",
     )
     return logging.getLogger("NetworkMonitor")
