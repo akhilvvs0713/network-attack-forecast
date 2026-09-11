@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import {
   ShieldCheck,
   Activity,
@@ -18,8 +18,7 @@ import {
   Server,
   PanelLeftClose,
   PanelLeftOpen,
-  Wifi,
-  ChevronDown
+  Wifi
 } from 'lucide-react';
 import {
   LineChart,
