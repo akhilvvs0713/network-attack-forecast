@@ -1,19 +1,19 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  ShieldCheck, 
-  Activity, 
-  Play, 
-  Pause, 
-  SkipForward, 
-  RotateCcw, 
-  LayoutDashboard, 
-  Radio, 
-  Crosshair, 
-  Cpu, 
-  Layers, 
-  FileText, 
-  UploadCloud, 
-  CheckCircle2, 
+import {
+  ShieldCheck,
+  Activity,
+  Play,
+  Pause,
+  SkipForward,
+  RotateCcw,
+  LayoutDashboard,
+  Radio,
+  Crosshair,
+  Cpu,
+  Layers,
+  FileText,
+  UploadCloud,
+  CheckCircle2,
   AlertTriangle,
   Server,
   PanelLeftClose,
@@ -21,16 +21,16 @@ import {
   Wifi,
   ChevronDown
 } from 'lucide-react';
-import { 
-  LineChart, 
-  Line, 
-  XAxis, 
-  YAxis, 
-  Tooltip, 
-  ResponsiveContainer, 
-  ReferenceLine, 
-  BarChart, 
-  Bar 
+import {
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  Tooltip,
+  ResponsiveContainer,
+  ReferenceLine,
+  BarChart,
+  Bar
 } from 'recharts';
 
 const THREAT_VECTORS = [
@@ -168,7 +168,7 @@ export default function App() {
 
   return (
     <div className="flex h-screen w-screen bg-[#070b0a] text-slate-200 font-sans overflow-hidden selection:bg-emerald-800 selection:text-white">
-      
+
       {/* Background Animated Glows */}
       <div className="fixed inset-0 pointer-events-none overflow-hidden transition-all duration-1000 ease-out">
         <div className="absolute w-[600px] h-[600px] bg-emerald-800/20 top-[-5%] left-[20%] rounded-full blur-[140px] animate-pulse" />
@@ -176,9 +176,8 @@ export default function App() {
       </div>
 
       {/* Collapsible Sidebar */}
-      <aside className={`relative z-20 border-r border-white/10 bg-[#0c1310]/50 backdrop-blur-2xl transition-all duration-300 ease-in-out flex flex-col justify-between ${
-        sidebarOpen ? 'w-64' : 'w-20'
-      }`}>
+      <aside className={`relative z-20 border-r border-white/10 bg-[#0c1310]/50 backdrop-blur-2xl transition-all duration-300 ease-in-out flex flex-col justify-between ${sidebarOpen ? 'w-64' : 'w-20'
+        }`}>
         <div>
           <div className="p-4 border-b border-white/10 flex items-center justify-between">
             <div className="flex items-center space-x-3 overflow-hidden">
@@ -192,7 +191,7 @@ export default function App() {
                 </div>
               )}
             </div>
-            <button 
+            <button
               onClick={() => setSidebarOpen(!sidebarOpen)}
               className="p-1.5 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] text-slate-400 hover:text-slate-200 transition border border-white/5"
             >
@@ -210,11 +209,10 @@ export default function App() {
                   key={item.id}
                   onClick={() => setActiveTab(item.id)}
                   title={!sidebarOpen ? item.id : ''}
-                  className={`w-full flex items-center space-x-3 px-3.5 py-2.5 rounded-xl text-[13px] font-medium transition-all duration-200 font-sans ${
-                    isActive 
-                      ? 'bg-emerald-950/70 text-emerald-300 border border-emerald-700/50 shadow-lg shadow-emerald-950/50 backdrop-blur-md' 
+                  className={`w-full flex items-center space-x-3 px-3.5 py-2.5 rounded-xl text-[13px] font-medium transition-all duration-200 font-sans ${isActive
+                      ? 'bg-emerald-950/70 text-emerald-300 border border-emerald-700/50 shadow-lg shadow-emerald-950/50 backdrop-blur-md'
                       : 'text-slate-400 hover:bg-white/[0.04] hover:text-slate-200'
-                  } ${!sidebarOpen ? 'justify-center px-0' : ''}`}
+                    } ${!sidebarOpen ? 'justify-center px-0' : ''}`}
                 >
                   <Icon className={`w-4 h-4 ${isActive ? 'text-emerald-400' : 'text-slate-400'}`} />
                   {sidebarOpen && <span>{item.id}</span>}
@@ -248,10 +246,10 @@ export default function App() {
           <div className="flex items-center space-x-3 text-xs font-sans">
             <span className="text-slate-500 font-medium">WORKSPACE //</span>
             <span className="text-emerald-400 font-semibold uppercase tracking-wider">{activeTab}</span>
-            
+
             {/* Scenario Dropdown Selector */}
             <div className="relative ml-4">
-              <select 
+              <select
                 value={currentScenarioId}
                 onChange={(e) => {
                   setCurrentScenarioId(e.target.value);
@@ -318,25 +316,25 @@ export default function App() {
               {/* Simulation Toolbar */}
               <div className="flex justify-between items-center bg-white/[0.03] border border-white/10 px-5 py-3 rounded-2xl backdrop-blur-2xl shadow-lg">
                 <div className="flex items-center space-x-3">
-                  <button 
+                  <button
                     onClick={() => setIsPlaying(!isPlaying)}
                     className="flex items-center space-x-2 px-4 py-2 bg-emerald-800/80 hover:bg-emerald-700 text-white rounded-xl text-xs font-semibold tracking-wide transition shadow-lg shadow-emerald-950/60 border border-emerald-600/40 backdrop-blur-md"
                   >
-                    {isPlaying ? <Pause className="w-3.5 h-3.5"/> : <Play className="w-3.5 h-3.5"/>}
+                    {isPlaying ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
                     <span>{isPlaying ? 'PAUSE TRAJECTORY' : 'SIMULATE FORWARD ROLLOUT'}</span>
                   </button>
-                  <button 
+                  <button
                     onClick={() => setStep(prev => Math.min(prev + 1, data.total_steps - 1))}
                     disabled={step >= data.total_steps - 1}
                     className="p-2 bg-white/[0.04] hover:bg-white/[0.08] disabled:opacity-30 border border-white/10 rounded-xl text-slate-300 transition"
                   >
-                    <SkipForward className="w-3.5 h-3.5"/>
+                    <SkipForward className="w-3.5 h-3.5" />
                   </button>
-                  <button 
+                  <button
                     onClick={() => setStep(0)}
                     className="p-2 bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 rounded-xl text-slate-300 transition"
                   >
-                    <RotateCcw className="w-3.5 h-3.5"/>
+                    <RotateCcw className="w-3.5 h-3.5" />
                   </button>
                 </div>
 
@@ -370,11 +368,11 @@ export default function App() {
                       <LineChart data={trajectoryPlot}>
                         <XAxis dataKey="timeKey" stroke="#64748b" tick={{ fontSize: 11 }} />
                         <YAxis domain={[0, 1]} stroke="#64748b" tick={{ fontSize: 11 }} tickFormatter={(val) => `${(val * 100).toFixed(0)}%`} />
-                        <Tooltip 
-                          contentStyle={{ 
-                            backgroundColor: 'rgba(12, 19, 16, 0.85)', 
-                            backdropFilter: 'blur(16px)', 
-                            borderColor: 'rgba(255, 255, 255, 0.15)', 
+                        <Tooltip
+                          contentStyle={{
+                            backgroundColor: 'rgba(12, 19, 16, 0.85)',
+                            backdropFilter: 'blur(16px)',
+                            borderColor: 'rgba(255, 255, 255, 0.15)',
                             borderRadius: '12px',
                             color: '#f8fafc'
                           }}
@@ -395,12 +393,12 @@ export default function App() {
                       <BarChart data={shapFeatures} layout="vertical">
                         <XAxis type="number" domain={[0, 1]} stroke="#64748b" tick={{ fontSize: 11 }} />
                         <YAxis dataKey="feature" type="category" width={140} stroke="#64748b" tick={{ fontSize: 10 }} />
-                        <Tooltip 
+                        <Tooltip
                           cursor={{ fill: 'rgba(255, 255, 255, 0.05)' }}
-                          contentStyle={{ 
-                            backgroundColor: 'rgba(12, 19, 16, 0.9)', 
-                            backdropFilter: 'blur(20px)', 
-                            border: '1px solid rgba(255, 255, 255, 0.2)', 
+                          contentStyle={{
+                            backgroundColor: 'rgba(12, 19, 16, 0.9)',
+                            backdropFilter: 'blur(20px)',
+                            border: '1px solid rgba(255, 255, 255, 0.2)',
                             borderRadius: '12px',
                             boxShadow: '0 8px 32px 0 rgba(0, 0, 0, 0.37)'
                           }}
@@ -418,13 +416,12 @@ export default function App() {
                 <h2 className="text-[15px] font-semibold text-slate-100 mb-3">Model-Inferred MITRE ATT&CK Stages (Horizon Rollout)</h2>
                 <div className="grid grid-cols-2 md:grid-cols-6 gap-2.5">
                   {dynamicStages.map((stg, idx) => (
-                    <div 
+                    <div
                       key={idx}
-                      className={`p-3 rounded-xl border transition-all duration-300 backdrop-blur-xl text-center ${
-                        stg.active 
-                          ? 'bg-emerald-950/80 border-emerald-400 text-emerald-200 font-semibold shadow-lg shadow-emerald-950/80 scale-105' 
+                      className={`p-3 rounded-xl border transition-all duration-300 backdrop-blur-xl text-center ${stg.active
+                          ? 'bg-emerald-950/80 border-emerald-400 text-emerald-200 font-semibold shadow-lg shadow-emerald-950/80 scale-105'
                           : 'bg-white/[0.02] border-white/5 text-slate-400'
-                      }`}
+                        }`}
                     >
                       <div className="text-[10px] uppercase font-mono font-medium tracking-wider text-slate-400 mb-1">{stg.label}</div>
                       <div className="text-[12px] leading-snug font-sans font-medium text-slate-200 truncate">{stg.stage}</div>
@@ -583,7 +580,7 @@ export default function App() {
             <div className="bg-white/[0.03] border border-white/10 p-6 rounded-2xl backdrop-blur-2xl shadow-xl">
               <h2 className="text-lg font-semibold text-slate-100 font-sans mb-1">MITRE ATT&CK Matrix Alignment</h2>
               <p className="text-[13px] text-slate-400 font-sans mb-6">Autonomous mapping of predicted latent network states to enterprise tactics</p>
-              
+
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
                 <div className="p-4 rounded-xl bg-white/[0.02] border border-white/10">
                   <div className="text-emerald-400 font-mono font-semibold text-xs mb-2">TA0006 - CREDENTIAL ACCESS</div>

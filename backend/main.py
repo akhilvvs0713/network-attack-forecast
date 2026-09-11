@@ -296,17 +296,9 @@ def _format_horizon(k: int) -> str:
 
 
 def _scale_sequence(seq: np.ndarray, missing_feature_indices: list) -> np.ndarray:
-    n_feat = len(_feature_cols)
     seq_s = signed_log1p(seq.astype(np.float64))
     seq_sc = _scaler.transform(seq_s).astype(np.float32)
     seq_sc = np.clip(seq_sc, -3.0, 3.0)
-    # Zero out columns for features absent from the uploaded CSV, across
-    # each of the 4 aggregation blocks (mean/std/min/max).
-    for m_idx in missing_feature_indices:
-        for agg_offset in range(4):
-            col_idx = agg_offset * n_feat + m_idx
-            if col_idx < seq_sc.shape[1]:
-                seq_sc[:, col_idx] = 0.0
     return seq_sc
 
 
@@ -320,7 +312,9 @@ def _gradient_attribution(X_t: torch.Tensor, top_k: int = 3):
         pred_state, atk_log, mitre_log, (h_n, c_n) = _model(X_t)
         atk_log.squeeze().backward()
 
-    grads = np.abs(X_t.grad.detach().cpu().numpy().squeeze(0))  # (seq_len, state_dim)
+    grad_array = X_t.grad.detach().cpu().numpy().squeeze(0)
+    input_array = X_t.detach().cpu().numpy().squeeze(0)
+    grads = np.abs(grad_array * input_array)  # (seq_len, state_dim)
     per_dim = grads.mean(axis=0)  # importance per state dimension
     max_val = per_dim.max() if per_dim.max() > 0 else 1.0
     top_idx = np.argsort(per_dim)[::-1][:top_k]
@@ -344,6 +338,9 @@ def _k_step_trajectory(pred_state, atk_log, mitre_log, h_c) -> List[Dict]:
 
     atk_prob = torch.sigmoid(atk_log).item()
     mt_cls = int(mitre_log.argmax(dim=1).item())
+    if atk_prob < _best_threshold:
+        mt_cls = 0
+        
     trajectory.append({
         "step_ahead": _format_horizon(1),
         "prob": round(float(atk_prob), 4),
@@ -356,6 +353,9 @@ def _k_step_trajectory(pred_state, atk_log, mitre_log, h_c) -> List[Dict]:
             pred_state, atk_log, mitre_log, (h_n, c_n) = _model(next_input, (h_n, c_n))
             atk_prob = torch.sigmoid(atk_log).item()
             mt_cls = int(mitre_log.argmax(dim=1).item())
+            if atk_prob < _best_threshold:
+                mt_cls = 0
+                
             trajectory.append({
                 "step_ahead": _format_horizon(step + 1),
                 "prob": round(float(atk_prob), 4),
@@ -392,6 +392,7 @@ def _run_model_inference(states: np.ndarray, timestamps: list, counts: list,
             true_future_sc = _scaler.transform(
                 signed_log1p(true_future).reshape(1, -1)
             )[0]
+            true_future_sc = np.clip(true_future_sc, -3.0, 3.0)
             mse_val = float(np.mean((pred_state.cpu().numpy().flatten() - true_future_sc) ** 2))
             z = (mse_val - _benign_mse_baseline["mean"]) / (_benign_mse_baseline["std"] + 1e-8)
             calibrated_mse = 1 / (1 + np.exp(-(z - 3.0)))
@@ -403,6 +404,9 @@ def _run_model_inference(states: np.ndarray, timestamps: list, counts: list,
         # the pred_state/atk_log/mitre_log/hidden-state already computed
         # above instead of re-running the forward pass.
         trajectory = _k_step_trajectory(pred_state, atk_log, mitre_log, hc)
+
+        if current_risk < _best_threshold:
+            mitre_cls = 0
 
         windows_out.append({
             "step_index": len(windows_out),
