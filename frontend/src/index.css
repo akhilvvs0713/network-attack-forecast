@@ -1,0 +1,32 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Base application font */
+html, body, #root {
+  font-family: 'Space Grotesk', sans-serif !important;
+  background-color: #070b0a;
+  color: #e2e8f0;
+}
+
+/* Force Space Grotesk across UI text, headings, and buttons */
+button, input, select, textarea, h1, h2, h3, h4, p, label {
+  font-family: 'Space Grotesk', sans-serif !important;
+}
+
+/* Force JetBrains Mono on all technical, telemetry, and numerical data */
+.font-mono,
+.font-mono *,
+code,
+pre,
+.tabular-nums {
+  font-family: 'JetBrains Mono', monospace !important;
+  font-feature-settings: "tnum" on, "zero" on;
+}
+
+.font-sans,
+.font-sans * {
+  font-family: 'Space Grotesk', sans-serif !important;
+}

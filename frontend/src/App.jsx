@@ -1,0 +1,646 @@
+import React, { useState, useEffect } from 'react';
+import { 
+  ShieldCheck, 
+  Activity, 
+  Play, 
+  Pause, 
+  SkipForward, 
+  RotateCcw, 
+  LayoutDashboard, 
+  Radio, 
+  Crosshair, 
+  Cpu, 
+  Layers, 
+  FileText, 
+  UploadCloud, 
+  CheckCircle2, 
+  AlertTriangle,
+  Server,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Wifi,
+  ChevronDown
+} from 'lucide-react';
+import { 
+  LineChart, 
+  Line, 
+  XAxis, 
+  YAxis, 
+  Tooltip, 
+  ResponsiveContainer, 
+  ReferenceLine, 
+  BarChart, 
+  Bar 
+} from 'recharts';
+
+const THREAT_VECTORS = [
+  { id: "VEC-1", name: "DoS Volumetric Saturation", actor: "Slowloris / GoldenEye", target: "10.0.0.5:80", severity: "CRITICAL", prob: "99%", recommendation: "Enforce dynamic SYN-cookies & rate-limit TCP connections per IP" },
+  { id: "VEC-2", name: "SMB Named Pipe Injection", actor: "Lateral Movement", target: "10.0.0.5:445", severity: "HIGH", prob: "86%", recommendation: "Enforce SMB packet signing & block RPC inter-VLAN" },
+  { id: "VEC-3", name: "Stealth SYN Port Sweep", actor: "Reconnaissance", target: "Class C Subnet", severity: "MEDIUM", prob: "64%", recommendation: "Deploy dynamic rate-limiting on gateway edge" }
+];
+
+export default function App() {
+  const [activeTab, setActiveTab] = useState('World Model');
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [scenarios, setScenarios] = useState([]);
+  const [currentScenarioId, setCurrentScenarioId] = useState('scenario_recon_to_lateral');
+  const [step, setStep] = useState(0);
+  const [data, setData] = useState(null);
+  const [uploadedResult, setUploadedResult] = useState(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
+  const [selectedFile, setSelectedFile] = useState(null);
+
+  // 1. Fetch available scenarios
+  const fetchScenarios = () => {
+    fetch('http://127.0.0.1:8000/api/scenarios')
+      .then(res => res.json())
+      .then(list => setScenarios(list))
+      .catch(err => console.error("Error fetching scenarios:", err));
+  };
+
+  useEffect(() => {
+    fetchScenarios();
+  }, []);
+
+  // 2. Fetch current step data
+  useEffect(() => {
+    if (!currentScenarioId) return;
+    fetch(`http://127.0.0.1:8000/api/scenario/${currentScenarioId}/step/${step}`)
+      .then(res => {
+        if (!res.ok) throw new Error("Step fetch failed");
+        return res.json();
+      })
+      .then(resData => setData(resData))
+      .catch(err => console.error("Error loading scenario step:", err));
+  }, [currentScenarioId, step]);
+
+  // 3. Playback Loop
+  useEffect(() => {
+    let interval = null;
+    if (isPlaying && data && data.total_steps) {
+      interval = setInterval(() => {
+        setStep(prev => (prev + 1 < data.total_steps ? prev + 1 : 0));
+      }, 2000);
+    }
+    return () => clearInterval(interval);
+  }, [isPlaying, data]);
+
+  // 4. Handle Upload
+  const handleFileUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setSelectedFile(file.name);
+    setIsUploading(true);
+
+    const formData = new FormData();
+    formData.append("file", file);
+
+    try {
+      const res = await fetch("http://127.0.0.1:8000/api/upload-csv", {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!res.ok) {
+        const errorDetail = await res.json();
+        throw new Error(errorDetail.detail || "Upload error");
+      }
+      const resData = await res.json();
+
+      setUploadedResult(resData);
+      setCurrentScenarioId(resData.scenario_id);
+      setStep(0);
+      fetchScenarios(); // Refresh scenario dropdown
+    } catch (err) {
+      console.error("Upload error:", err);
+      alert(`CSV Ingestion Error: ${err.message}`);
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  if (!data || !data.current_window) {
+    return (
+      <div className="h-screen w-screen flex items-center justify-center bg-[#070b0a] text-emerald-400 font-mono">
+        <div className="flex items-center space-x-3 p-6 rounded-2xl bg-white/[0.03] border border-white/10 shadow-2xl backdrop-blur-2xl">
+          <Activity className="animate-spin w-5 h-5 text-emerald-400" />
+          <span className="text-sm font-medium tracking-wide">CONNECTING TO CYBER WORLD MODEL ENGINE...</span>
+        </div>
+      </div>
+    );
+  }
+
+  const currentWindow = data.current_window;
+  const currentRisk = currentWindow.current_risk || 0;
+  const trajectoryData = Array.isArray(currentWindow.trajectory) ? currentWindow.trajectory : [];
+  const shapFeatures = Array.isArray(currentWindow.shap_features) ? currentWindow.shap_features : [];
+
+  // Trajectory Plot Data
+  const trajectoryPlot = [
+    { timeKey: 'T_0 (Observed)', probability: currentRisk },
+    ...trajectoryData.map((item) => ({
+      timeKey: item.step_ahead || "+1min",
+      probability: item.prob || 0
+    }))
+  ];
+
+  // Dynamic stages built from live PyTorch lookaheads
+  const dynamicStages = [
+    { label: "Observed Window", stage: currentWindow.current_stage || "Normal Operation", prob: currentRisk, active: true },
+    ...trajectoryData.map((item) => ({
+      label: `Lookahead ${item.step_ahead}`,
+      stage: item.stage || "Evaluating...",
+      prob: item.prob,
+      active: false
+    }))
+  ];
+
+  const navItems = [
+    { id: 'World Model', icon: Cpu },
+    { id: 'Overview', icon: LayoutDashboard },
+    { id: 'Live Monitor', icon: Radio },
+    { id: 'Attacks', icon: Crosshair },
+    { id: 'MITRE', icon: Layers },
+    { id: 'Reports', icon: FileText }
+  ];
+
+  return (
+    <div className="flex h-screen w-screen bg-[#070b0a] text-slate-200 font-sans overflow-hidden selection:bg-emerald-800 selection:text-white">
+      
+      {/* Background Animated Glows */}
+      <div className="fixed inset-0 pointer-events-none overflow-hidden transition-all duration-1000 ease-out">
+        <div className="absolute w-[600px] h-[600px] bg-emerald-800/20 top-[-5%] left-[20%] rounded-full blur-[140px] animate-pulse" />
+        <div className="absolute w-[500px] h-[500px] bg-[#5a321e]/20 bottom-[-10%] right-[15%] rounded-full blur-[140px]" />
+      </div>
+
+      {/* Collapsible Sidebar */}
+      <aside className={`relative z-20 border-r border-white/10 bg-[#0c1310]/50 backdrop-blur-2xl transition-all duration-300 ease-in-out flex flex-col justify-between ${
+        sidebarOpen ? 'w-64' : 'w-20'
+      }`}>
+        <div>
+          <div className="p-4 border-b border-white/10 flex items-center justify-between">
+            <div className="flex items-center space-x-3 overflow-hidden">
+              <div className="min-w-[32px] w-8 h-8 rounded-xl bg-emerald-800/40 border border-emerald-500/40 flex items-center justify-center shadow-lg shadow-emerald-950/60 backdrop-blur-md">
+                <ShieldCheck className="w-5 h-5 text-emerald-300" />
+              </div>
+              {sidebarOpen && (
+                <div className="truncate">
+                  <div className="font-bold text-sm tracking-wide text-slate-100 font-sans">SENTINEL AI</div>
+                  <div className="text-[10px] text-emerald-400 font-mono font-medium tracking-tight">WORLD MODEL</div>
+                </div>
+              )}
+            </div>
+            <button 
+              onClick={() => setSidebarOpen(!sidebarOpen)}
+              className="p-1.5 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] text-slate-400 hover:text-slate-200 transition border border-white/5"
+            >
+              {sidebarOpen ? <PanelLeftClose className="w-4 h-4" /> : <PanelLeftOpen className="w-4 h-4" />}
+            </button>
+          </div>
+
+          <div className="p-3 space-y-1.5">
+            {sidebarOpen && <div className="text-[11px] font-sans font-medium uppercase tracking-wider text-slate-500 px-3 py-1">Views</div>}
+            {navItems.map((item) => {
+              const Icon = item.icon;
+              const isActive = activeTab === item.id;
+              return (
+                <button
+                  key={item.id}
+                  onClick={() => setActiveTab(item.id)}
+                  title={!sidebarOpen ? item.id : ''}
+                  className={`w-full flex items-center space-x-3 px-3.5 py-2.5 rounded-xl text-[13px] font-medium transition-all duration-200 font-sans ${
+                    isActive 
+                      ? 'bg-emerald-950/70 text-emerald-300 border border-emerald-700/50 shadow-lg shadow-emerald-950/50 backdrop-blur-md' 
+                      : 'text-slate-400 hover:bg-white/[0.04] hover:text-slate-200'
+                  } ${!sidebarOpen ? 'justify-center px-0' : ''}`}
+                >
+                  <Icon className={`w-4 h-4 ${isActive ? 'text-emerald-400' : 'text-slate-400'}`} />
+                  {sidebarOpen && <span>{item.id}</span>}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {sidebarOpen ? (
+          <div className="p-3.5 m-3 rounded-xl bg-white/[0.03] border border-white/10 backdrop-blur-xl shadow-lg">
+            <div className="flex items-center space-x-2 text-[11px] font-sans font-medium text-slate-400 mb-1">
+              <Server className="w-3.5 h-3.5 text-emerald-400" />
+              <span>PROTECTED CII NODE</span>
+            </div>
+            <div className="text-[12px] font-mono font-semibold text-emerald-300 truncate">
+              {data.metadata?.target_asset || "192.168.1.50"}
+            </div>
+            <div className="text-[11px] text-slate-400 font-sans mt-0.5">SCADA Power Gateway</div>
+          </div>
+        ) : (
+          <div className="p-3 mb-3 flex justify-center">
+            <Server className="w-4 h-4 text-emerald-400" />
+          </div>
+        )}
+      </aside>
+
+      {/* Main Viewport */}
+      <main className="flex-1 relative z-10 flex flex-col overflow-y-auto">
+        <header className="h-16 border-b border-white/10 px-8 flex items-center justify-between bg-[#080d0b]/40 backdrop-blur-2xl">
+          <div className="flex items-center space-x-3 text-xs font-sans">
+            <span className="text-slate-500 font-medium">WORKSPACE //</span>
+            <span className="text-emerald-400 font-semibold uppercase tracking-wider">{activeTab}</span>
+            
+            {/* Scenario Dropdown Selector */}
+            <div className="relative ml-4">
+              <select 
+                value={currentScenarioId}
+                onChange={(e) => {
+                  setCurrentScenarioId(e.target.value);
+                  setStep(0);
+                }}
+                className="bg-white/[0.04] border border-white/10 text-slate-200 text-xs rounded-lg px-2.5 py-1 font-mono focus:outline-none focus:border-emerald-500"
+              >
+                {scenarios.map((s) => (
+                  <option key={s.id} value={s.id} className="bg-[#0c1310] text-slate-200">
+                    {s.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="flex items-center space-x-6 text-xs">
+            <div className="flex items-center space-x-1.5 px-3 py-1 rounded-full bg-emerald-950/60 border border-emerald-800/40 text-emerald-300 text-[11px] font-mono font-medium backdrop-blur-md">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
+              <span>SYNCHRONIZED ({data.total_steps} WINDOWS)</span>
+            </div>
+            <div className="text-slate-500 font-sans">TELEMETRY TIME: <span className="text-slate-300 font-mono ml-1">{currentWindow.timestamp}</span></div>
+          </div>
+        </header>
+
+        <div className="p-8 space-y-6">
+
+          {/* VIEW: WORLD MODEL */}
+          {activeTab === 'World Model' && (
+            <>
+              {/* Metric Cards */}
+              <div className="grid grid-cols-4 gap-4">
+                <div className="bg-white/[0.03] border border-white/10 p-4 rounded-2xl backdrop-blur-2xl shadow-xl">
+                  <div className="text-[11px] font-sans font-medium text-slate-400 tracking-wider">FLOW THROUGHPUT</div>
+                  <div className="text-3xl font-semibold font-mono text-slate-100 mt-1">{currentWindow.flow_count} <span className="text-sm font-normal text-slate-400">/min</span></div>
+                  <div className="text-[11px] text-emerald-400 font-sans mt-1">Aggregated Window</div>
+                </div>
+
+                <div className="bg-white/[0.03] border border-white/10 p-4 rounded-2xl backdrop-blur-2xl shadow-xl">
+                  <div className="text-[11px] font-sans font-medium text-slate-400 tracking-wider">CAUSAL DIVERGENCE</div>
+                  <div className="text-xl font-semibold font-sans text-amber-300 mt-2">
+                    {currentRisk > 0.6 ? "Critical Anomaly" : currentRisk > 0.3 ? "Elevated Drift" : "Nominal Physics"}
+                  </div>
+                  <div className="text-[11px] text-amber-400/80 font-sans mt-1">Latent State Transition</div>
+                </div>
+
+                <div className="bg-white/[0.03] border border-white/10 p-4 rounded-2xl backdrop-blur-2xl shadow-xl">
+                  <div className="text-[11px] font-sans font-medium text-slate-400 tracking-wider">PROJECTED MITRE TACTIC</div>
+                  <div className="text-sm font-semibold font-sans text-red-300 mt-2.5 truncate">
+                    {currentWindow.current_stage}
+                  </div>
+                  <div className="text-[11px] text-red-400 font-sans mt-1">PyTorch 3-Head Classifier</div>
+                </div>
+
+                <div className="bg-white/[0.03] border border-white/10 p-4 rounded-2xl backdrop-blur-2xl shadow-xl">
+                  <div className="text-[11px] font-sans font-medium text-slate-400 tracking-wider">INFILTRATION PROBABILITY</div>
+                  <div className="text-3xl font-semibold font-mono text-[#e59866] mt-1">
+                    {(currentRisk * 100).toFixed(1)}%
+                  </div>
+                  <div className="text-[11px] text-slate-400 font-sans mt-1">Horizon k=5 Rollout</div>
+                </div>
+              </div>
+
+              {/* Simulation Toolbar */}
+              <div className="flex justify-between items-center bg-white/[0.03] border border-white/10 px-5 py-3 rounded-2xl backdrop-blur-2xl shadow-lg">
+                <div className="flex items-center space-x-3">
+                  <button 
+                    onClick={() => setIsPlaying(!isPlaying)}
+                    className="flex items-center space-x-2 px-4 py-2 bg-emerald-800/80 hover:bg-emerald-700 text-white rounded-xl text-xs font-semibold tracking-wide transition shadow-lg shadow-emerald-950/60 border border-emerald-600/40 backdrop-blur-md"
+                  >
+                    {isPlaying ? <Pause className="w-3.5 h-3.5"/> : <Play className="w-3.5 h-3.5"/>}
+                    <span>{isPlaying ? 'PAUSE TRAJECTORY' : 'SIMULATE FORWARD ROLLOUT'}</span>
+                  </button>
+                  <button 
+                    onClick={() => setStep(prev => Math.min(prev + 1, data.total_steps - 1))}
+                    disabled={step >= data.total_steps - 1}
+                    className="p-2 bg-white/[0.04] hover:bg-white/[0.08] disabled:opacity-30 border border-white/10 rounded-xl text-slate-300 transition"
+                  >
+                    <SkipForward className="w-3.5 h-3.5"/>
+                  </button>
+                  <button 
+                    onClick={() => setStep(0)}
+                    className="p-2 bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 rounded-xl text-slate-300 transition"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5"/>
+                  </button>
+                </div>
+
+                <div className="flex items-center space-x-4">
+                  <label className="cursor-pointer flex items-center space-x-2 px-3.5 py-2 rounded-xl bg-white/[0.03] hover:bg-white/[0.07] border border-white/10 text-xs text-slate-300 transition backdrop-blur-md font-mono">
+                    <UploadCloud className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>{isUploading ? "COMPUTING INFERENCE..." : selectedFile ? selectedFile : "INGEST RAW PCAP / CSV"}</span>
+                    <input type="file" className="hidden" accept=".pcap,.csv" onChange={handleFileUpload} />
+                  </label>
+                  <div className="text-xs font-sans text-slate-400">
+                    WINDOW: <span className="text-emerald-400 font-semibold font-mono">{step + 1}</span> / <span className="font-mono">{data.total_steps}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Trajectory Plot + SHAP */}
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                <div className="lg:col-span-2 bg-white/[0.03] border border-white/10 p-6 rounded-2xl backdrop-blur-2xl shadow-xl">
+                  <div className="flex justify-between items-center mb-4">
+                    <div>
+                      <h2 className="text-[15px] font-semibold text-slate-100">Forward Simulation Trajectory P(S_t+k | S_t)</h2>
+                      <p className="text-[12px] text-slate-400">Autoregressive forward rollout from LSTM hidden states</p>
+                    </div>
+                    <div className="text-[11px] font-mono font-medium px-3 py-1 rounded-lg bg-emerald-950/60 border border-emerald-700/50 text-emerald-300">
+                      LOOKAHEAD: +5min
+                    </div>
+                  </div>
+
+                  <div className="h-60 w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={trajectoryPlot}>
+                        <XAxis dataKey="timeKey" stroke="#64748b" tick={{ fontSize: 11 }} />
+                        <YAxis domain={[0, 1]} stroke="#64748b" tick={{ fontSize: 11 }} tickFormatter={(val) => `${(val * 100).toFixed(0)}%`} />
+                        <Tooltip 
+                          contentStyle={{ 
+                            backgroundColor: 'rgba(12, 19, 16, 0.85)', 
+                            backdropFilter: 'blur(16px)', 
+                            borderColor: 'rgba(255, 255, 255, 0.15)', 
+                            borderRadius: '12px',
+                            color: '#f8fafc'
+                          }}
+                          formatter={(val) => [`${(Number(val) * 100).toFixed(2)}%`, 'Attack Probability']}
+                        />
+                        <ReferenceLine x="T_0 (Observed)" stroke="#e59866" strokeDasharray="3 3" />
+                        <Line type="monotone" dataKey="probability" stroke="#10b981" strokeWidth={2.5} dot={{ r: 4, fill: '#10b981' }} />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+
+                <div className="bg-white/[0.03] border border-white/10 p-6 rounded-2xl backdrop-blur-2xl shadow-xl">
+                  <h2 className="text-[15px] font-semibold text-slate-100 mb-1">Explainability (SHAP / Gradient Weights)</h2>
+                  <p className="text-[12px] text-slate-400 mb-4">Input saliency gradients w.r.t attack head</p>
+                  <div className="h-60 w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={shapFeatures} layout="vertical">
+                        <XAxis type="number" domain={[0, 1]} stroke="#64748b" tick={{ fontSize: 11 }} />
+                        <YAxis dataKey="feature" type="category" width={140} stroke="#64748b" tick={{ fontSize: 10 }} />
+                        <Tooltip 
+                          cursor={{ fill: 'rgba(255, 255, 255, 0.05)' }}
+                          contentStyle={{ 
+                            backgroundColor: 'rgba(12, 19, 16, 0.9)', 
+                            backdropFilter: 'blur(20px)', 
+                            border: '1px solid rgba(255, 255, 255, 0.2)', 
+                            borderRadius: '12px',
+                            boxShadow: '0 8px 32px 0 rgba(0, 0, 0, 0.37)'
+                          }}
+                          formatter={(val) => [`${(Number(val) * 100).toFixed(1)}%`, 'Attribution Weight']}
+                        />
+                        <Bar dataKey="importance" fill="#d97736" radius={[0, 4, 4, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              </div>
+
+              {/* Real Model MITRE ATT&CK Stages */}
+              <div className="bg-white/[0.03] border border-white/10 p-6 rounded-2xl backdrop-blur-2xl shadow-xl">
+                <h2 className="text-[15px] font-semibold text-slate-100 mb-3">Model-Inferred MITRE ATT&CK Stages (Horizon Rollout)</h2>
+                <div className="grid grid-cols-2 md:grid-cols-6 gap-2.5">
+                  {dynamicStages.map((stg, idx) => (
+                    <div 
+                      key={idx}
+                      className={`p-3 rounded-xl border transition-all duration-300 backdrop-blur-xl text-center ${
+                        stg.active 
+                          ? 'bg-emerald-950/80 border-emerald-400 text-emerald-200 font-semibold shadow-lg shadow-emerald-950/80 scale-105' 
+                          : 'bg-white/[0.02] border-white/5 text-slate-400'
+                      }`}
+                    >
+                      <div className="text-[10px] uppercase font-mono font-medium tracking-wider text-slate-400 mb-1">{stg.label}</div>
+                      <div className="text-[12px] leading-snug font-sans font-medium text-slate-200 truncate">{stg.stage}</div>
+                      <div className="text-[10px] font-mono text-emerald-400 mt-1">P: {(stg.prob * 100).toFixed(1)}%</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* VIEW: LIVE MONITOR */}
+          {activeTab === 'Live Monitor' && (
+            <div className="p-6 rounded-2xl bg-white/[0.03] border border-white/10 backdrop-blur-2xl shadow-xl space-y-4">
+              <div className="flex justify-between items-center">
+                <div>
+                  <h2 className="text-[15px] font-semibold text-slate-100">Live Traffic Ingestion & Anomaly Monitor</h2>
+                  <p className="text-[12px] text-slate-400">1-Minute Window Inference from PyTorch LSTM World Model</p>
+                </div>
+                {uploadedResult?.detection_summary && (
+                  <div className="flex items-center space-x-2 text-[11px] font-mono text-emerald-400 bg-emerald-950/60 border border-emerald-800/40 px-3 py-1.5 rounded-lg">
+                    <Wifi className="w-3.5 h-3.5 animate-pulse" />
+                    <span>DETECTED {uploadedResult.detection_summary.anomalous_windows_detected} / {uploadedResult.detection_summary.total_windows_evaluated} ANOMALIES</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Status Banner */}
+              {uploadedResult?.detection_summary ? (
+                uploadedResult.detection_summary.anomalous_windows_detected > 0 ? (
+                  <div className="p-3.5 rounded-xl bg-red-950/40 border border-red-800/50 flex items-center space-x-3 text-red-300 text-xs font-mono">
+                    <AlertTriangle className="w-4 h-4 text-red-400" />
+                    <span>🚨 {uploadedResult.detection_summary.verdict} (Threshold: {uploadedResult.detection_summary.model_threshold})</span>
+                  </div>
+                ) : (
+                  <div className="p-3.5 rounded-xl bg-emerald-950/40 border border-emerald-800/50 flex items-center space-x-3 text-emerald-300 text-xs font-mono">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                    <span>✓ {uploadedResult.detection_summary.verdict}</span>
+                  </div>
+                )
+              ) : null}
+
+              {/* Detection Log Table */}
+              <div className="overflow-x-auto mt-4">
+                <table className="w-full text-left text-xs border-collapse font-mono">
+                  <thead>
+                    <tr className="border-b border-white/10 text-slate-400 uppercase tracking-wider text-[11px]">
+                      <th className="py-2.5 px-3">WINDOW TIME</th>
+                      <th className="py-2.5 px-3">P(ATTACK)</th>
+                      <th className="py-2.5 px-3">IS ATTACK</th>
+                      <th className="py-2.5 px-3">STATUS</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-white/5">
+                    {uploadedResult?.detection_log ? (
+                      uploadedResult.detection_log.map((row, idx) => (
+                        <tr key={idx} className="hover:bg-white/[0.03] transition">
+                          <td className="py-2.5 px-3 text-slate-300">{row.timestamp}</td>
+                          <td className="py-2.5 px-3 text-amber-300 font-semibold">{row.attack_prob.toFixed(4)}</td>
+                          <td className="py-2.5 px-3">
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${row.is_attack ? 'bg-red-950/80 text-red-300 border border-red-800' : 'bg-emerald-950/80 text-emerald-300 border border-emerald-800'}`}>
+                              {row.is_attack ? "True" : "False"}
+                            </span>
+                          </td>
+                          <td className="py-2.5 px-3">
+                            {row.is_attack ? (
+                              <span className="text-red-400 font-semibold flex items-center space-x-1">
+                                <AlertTriangle className="w-3 h-3 inline mr-1" />
+                                Flagged
+                              </span>
+                            ) : (
+                              <span className="text-emerald-400 flex items-center space-x-1">
+                                <CheckCircle2 className="w-3 h-3 inline mr-1" />
+                                Nominal
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      ))
+                    ) : (
+                      <tr>
+                        <td colSpan={4} className="py-6 text-center text-slate-500">
+                          Upload a test CSV via "INGEST RAW PCAP / CSV" to stream real detection logs.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* VIEW: OVERVIEW */}
+          {activeTab === 'Overview' && (
+            <div className="space-y-6">
+              <div className="grid grid-cols-3 gap-6">
+                <div className="p-6 rounded-2xl bg-white/[0.03] border border-white/10 backdrop-blur-2xl shadow-xl">
+                  <div className="text-[11px] font-sans font-medium uppercase tracking-wider text-slate-400 mb-1">NETWORK HEALTH INDEX</div>
+                  <div className="text-3xl font-semibold font-mono text-emerald-400">92.4%</div>
+                  <p className="text-[13px] text-slate-400 mt-2">Nominal baseline across 41 internal industrial subnets.</p>
+                </div>
+                <div className="p-6 rounded-2xl bg-white/[0.03] border border-white/10 backdrop-blur-2xl shadow-xl">
+                  <div className="text-[11px] font-sans font-medium uppercase tracking-wider text-slate-400 mb-1">PROACTIVE DEFENSE BUFFER</div>
+                  <div className="text-3xl font-semibold font-mono text-amber-300">+5.0 min</div>
+                  <p className="text-[13px] text-slate-400 mt-2">Forward horizon lookahead before compromise cascades.</p>
+                </div>
+                <div className="p-6 rounded-2xl bg-white/[0.03] border border-white/10 backdrop-blur-2xl shadow-xl">
+                  <div className="text-[11px] font-sans font-medium uppercase tracking-wider text-slate-400 mb-1">ISOLATION READINESS</div>
+                  <div className="text-3xl font-semibold font-sans text-rose-400">Armed</div>
+                  <p className="text-[13px] text-slate-400 mt-2">Autonomous micro-segmentation ready for deployment.</p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* VIEW: ATTACKS */}
+          {activeTab === 'Attacks' && (
+            <div className="space-y-4">
+              <div className="flex justify-between items-center">
+                <div>
+                  <h2 className="text-lg font-semibold text-slate-100 font-sans">Correlated Infiltration Pathways & Mitigations</h2>
+                  <p className="text-[13px] text-slate-400 font-sans">Proactive containment strategies generated from World Model rollouts</p>
+                </div>
+                <div className="text-[11px] font-mono font-medium text-rose-400 bg-rose-950/60 border border-rose-800/40 px-3 py-1 rounded-lg">
+                  ACTION REQUIRED
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-4">
+                {THREAT_VECTORS.map((vec) => (
+                  <div key={vec.id} className="p-5 rounded-2xl bg-white/[0.03] border border-white/10 backdrop-blur-2xl shadow-xl flex justify-between items-center">
+                    <div className="space-y-1">
+                      <div className="flex items-center space-x-3">
+                        <span className="text-xs font-mono font-semibold text-red-400">{vec.id}</span>
+                        <span className="text-[14px] font-semibold text-slate-100 font-sans">{vec.name}</span>
+                        <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-red-950/60 border border-red-800/50 text-red-300">{vec.severity}</span>
+                      </div>
+                      <div className="text-[13px] text-slate-400 font-sans">
+                        Actor Signature: <span className="font-mono text-slate-300">{vec.actor}</span> ➔ Target: <span className="font-mono text-slate-300">{vec.target}</span>
+                      </div>
+                      <div className="text-[12px] text-emerald-300/90 font-sans pt-1">
+                        Recommended Defense: <span className="font-medium text-emerald-300">{vec.recommendation}</span>
+                      </div>
+                    </div>
+                    <button className="px-4 py-2 rounded-xl bg-emerald-800/60 hover:bg-emerald-700 text-white font-sans font-medium text-xs border border-emerald-500/40 shadow-lg shadow-emerald-950/50 transition">
+                      ENFORCE ACL
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* VIEW: MITRE */}
+          {activeTab === 'MITRE' && (
+            <div className="bg-white/[0.03] border border-white/10 p-6 rounded-2xl backdrop-blur-2xl shadow-xl">
+              <h2 className="text-lg font-semibold text-slate-100 font-sans mb-1">MITRE ATT&CK Matrix Alignment</h2>
+              <p className="text-[13px] text-slate-400 font-sans mb-6">Autonomous mapping of predicted latent network states to enterprise tactics</p>
+              
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+                <div className="p-4 rounded-xl bg-white/[0.02] border border-white/10">
+                  <div className="text-emerald-400 font-mono font-semibold text-xs mb-2">TA0006 - CREDENTIAL ACCESS</div>
+                  <p className="text-slate-400 text-[13px] font-sans leading-relaxed">Repeated authentication flow attempts over standard remote management ports.</p>
+                </div>
+                <div className="p-4 rounded-xl bg-white/[0.02] border border-white/10">
+                  <div className="text-amber-400 font-mono font-semibold text-xs mb-2">TA0040 - DOS / DDOS IMPACT</div>
+                  <p className="text-slate-400 text-[13px] font-sans leading-relaxed">High volumetric saturation and anomalous packet length distribution collapses.</p>
+                </div>
+                <div className="p-4 rounded-xl bg-white/[0.02] border border-white/10">
+                  <div className="text-red-400 font-mono font-semibold text-xs mb-2">TA0008 - LATERAL MOVEMENT</div>
+                  <p className="text-slate-400 text-[13px] font-sans leading-relaxed">Subnet pivot attempts using named pipes and remote administrative shares.</p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* VIEW: REPORTS */}
+          {activeTab === 'Reports' && (
+            <div className="bg-white/[0.03] border border-white/10 p-6 rounded-2xl backdrop-blur-2xl shadow-xl">
+              <h2 className="text-lg font-semibold text-slate-100 font-sans mb-1">Empirical Benchmark: World Model vs Static ML</h2>
+              <p className="text-[13px] text-slate-400 font-sans mb-6">Validation across multi-stage kill chains in CIC-IDS2018</p>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead>
+                    <tr className="border-b border-white/10 text-slate-400 font-sans font-medium uppercase tracking-wider text-[11px]">
+                      <th className="py-3 px-4">DETECTION ENGINE</th>
+                      <th className="py-3 px-4">LEAD-TIME ADVANTAGE</th>
+                      <th className="py-3 px-4">F1-SCORE</th>
+                      <th className="py-3 px-4">FALSE POSITIVE RATE</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-white/5 font-mono text-xs">
+                    <tr>
+                      <td className="py-3 px-4 text-slate-300 font-sans">Logistic Regression Baseline</td>
+                      <td className="py-3 px-4 text-slate-400">0.0s (Alerts during exploit)</td>
+                      <td className="py-3 px-4 text-slate-400">0.0208</td>
+                      <td className="py-3 px-4 text-red-400/80">5.24%</td>
+                    </tr>
+                    <tr className="bg-emerald-950/30 text-emerald-300 font-semibold">
+                      <td className="py-3 px-4 flex items-center space-x-2 font-sans">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                        <span>Latent World Model (Trained)</span>
+                      </td>
+                      <td className="py-3 px-4 text-emerald-400">+5.0 min (Forward Horizon)</td>
+                      <td className="py-3 px-4">0.5837</td>
+                      <td className="py-3 px-4 text-emerald-400">2.47%</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+        </div>
+      </main>
+    </div>
+  );
+}

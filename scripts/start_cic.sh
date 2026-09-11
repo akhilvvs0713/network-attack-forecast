@@ -28,7 +28,7 @@ mkdir -p "$CIC_FLOW_DIR"
 # Resolve venv Python and our CIC wrapper script.
 # The wrapper works around a positional-argument bug in cicflowmeter
 # 0.5.0's main() — see src/collector/cic_wrapper.py for details.
-VENV_PYTHON="$BASE_DIR/.venv/bin/python"
+VENV_PYTHON="$BASE_DIR/.venv/bin/python-capture"
 if [ ! -x "$VENV_PYTHON" ]; then
     VENV_PYTHON="$BASE_DIR/.venv/bin/python3"
 fi
