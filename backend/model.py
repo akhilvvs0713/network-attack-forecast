@@ -7,6 +7,7 @@ Any drift between this file and the notebook will silently corrupt
 predictions, so if you change the notebook's clean_chunk / signed_log1p /
 LSTMWorldModel, mirror the change here too.
 """
+
 import re
 import numpy as np
 import torch
@@ -39,9 +40,14 @@ class LSTMWorldModel(nn.Module):
     Identical to notebook Cell 7 — required to load the saved state_dict.
     """
 
-    def __init__(self, state_dim: int, hidden_size: int = 256,
-                 num_layers: int = 2, dropout: float = 0.3,
-                 num_mitre: int = NUM_MITRE):
+    def __init__(
+        self,
+        state_dim: int,
+        hidden_size: int = 256,
+        num_layers: int = 2,
+        dropout: float = 0.3,
+        num_mitre: int = NUM_MITRE,
+    ):
         super().__init__()
         self.state_dim = state_dim
         self.hidden_size = hidden_size
@@ -78,7 +84,10 @@ class LSTMWorldModel(nn.Module):
 
     def forward(self, x, hc=None):
         if hc is not None:
-            hc = (hc[0].transpose(0, 1).contiguous(), hc[1].transpose(0, 1).contiguous())
+            hc = (
+                hc[0].transpose(0, 1).contiguous(),
+                hc[1].transpose(0, 1).contiguous(),
+            )
 
         output, (h_n, c_n) = self.lstm(x, hc)
         h_last = output[:, -1, :]
@@ -101,10 +110,14 @@ def build_agg_names(feature_cols):
     for agg in ["mean", "std", "min", "max"]:
         for f in feature_cols:
             names.append(f"{agg}_{f}")
-    names.extend([
-        "meta_log_flow_count", "meta_log_unique_ports",
-        "meta_unique_protocols", "meta_high_port_ratio",
-    ])
+    names.extend(
+        [
+            "meta_log_flow_count",
+            "meta_log_unique_ports",
+            "meta_unique_protocols",
+            "meta_high_port_ratio",
+        ]
+    )
     return names
 
 

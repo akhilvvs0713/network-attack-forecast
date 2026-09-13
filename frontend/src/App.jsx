@@ -32,6 +32,52 @@ import {
   Bar
 } from 'recharts';
 
+const SHAP_EXPLANATIONS = {
+  "Flow Pkts/s": "Extremely high packet rates indicate volumetric flooding (e.g., DoS/DDoS) intended to exhaust server resources.",
+  "Fwd Pkts/s": "High forward packet rates suggest a rapid automated script or flood originating from the attacker.",
+  "Bwd Pkts/s": "High backward packet rates can indicate a reflection attack or massive automated server responses.",
+  "Tot Fwd Pkts": "Anomalous total forward packets often point to sustained data transfers, tunneling, or brute-force attempts.",
+  "Tot Bwd Pkts": "Anomalous total backward packets suggest heavy server responses, common in data exfiltration or reflection DoS.",
+  "Flow Duration": "Unusual flow durations point toward 'low-and-slow' attacks (like Slowloris) or persistent C2 beaconing connections.",
+  "Flow IAT Mean": "Irregular inter-arrival times typically indicate automated command-and-control (C2) beaconing or slow-rate brute forcing.",
+  "Flow IAT Max": "Large gaps between packets are characteristic of persistent stealthy connections keeping sessions alive.",
+  "Fwd IAT Mean": "Anomalies in forward packet timing suggest automated attacker tools rather than natural human traffic.",
+  "Fwd Pkt Len Max": "Unusually large forward payloads can indicate forced buffer overflows, SQL injection payloads, or exploit deliveries.",
+  "Bwd Pkt Len Max": "Massive backward payloads strongly suggest unauthorized data exfiltration or database dumping from the server.",
+  "Pkt Len Mean": "An abnormal average packet length often reveals tunneling protocols or abnormal data payloads hidden in standard ports.",
+  "Pkt Len Var": "High packet length variance indicates highly irregular payloads, common in multi-stage exploits.",
+  "Init Fwd Win Byts": "Anomalous initial forward TCP window sizes often suggest stealth SYN scanning or custom exploit scripts bypassing standard OS networking stacks.",
+  "Init_Win_bytes_forward": "Anomalous initial forward TCP window sizes often suggest stealth SYN scanning or custom exploit scripts bypassing standard OS networking stacks.",
+  "Init Bwd Win Byts": "Irregular backward window sizes can reveal customized reverse-shells or anomalous server configurations.",
+  "SYN Flag Cnt": "Spikes in SYN flags are the primary indicator of TCP SYN floods or aggressive port scanning (Reconnaissance).",
+  "ACK Flag Cnt": "High ACK flag counts can indicate ACK floods or attempts to bypass stateless firewalls.",
+  "PSH Flag Cnt": "Frequent PSH (Push) flags often indicate interactive attacker sessions (like reverse shells) forcing immediate data processing.",
+  "RST Flag Cnt": "Spikes in RST flags suggest aggressive connection termination, often seen in port scanning or application-layer DoS.",
+  "Dst Port": "Targeting non-standard or administrative destination ports (e.g., 445, 3389, 22) usually indicates Lateral Movement or Credential Access attempts.",
+  "Protocol": "Anomalous protocol usage (e.g., unexpected UDP or ICMP traffic) can indicate covert channels or network mapping.",
+  "meta_log_flow_count": "A massive spike in total concurrent flows is the most reliable indicator of a distributed denial of service (DDoS) or aggressive subnet sweep.",
+  "meta_unique_protocols": "A sudden variety of protocols in a single window suggests comprehensive network mapping and reconnaissance.",
+  "meta_high_port_ratio": "A high ratio of ephemeral high ports indicates large-scale automated scripting, botnet activity, or massive outbound request flooding."
+};
+
+function getShapExplanation(featureName) {
+  if (!featureName) return "No anomalous features detected in this window.";
+  let baseFeature = featureName;
+  if (baseFeature.startsWith("mean_")) baseFeature = baseFeature.substring(5);
+  else if (baseFeature.startsWith("max_")) baseFeature = baseFeature.substring(4);
+  else if (baseFeature.startsWith("min_")) baseFeature = baseFeature.substring(4);
+  else if (baseFeature.startsWith("std_")) baseFeature = baseFeature.substring(4);
+
+  const explanation = SHAP_EXPLANATIONS[baseFeature];
+  if (explanation) {
+    if (featureName.startsWith("max_")) return `(Peak Spike) ${explanation}`;
+    if (featureName.startsWith("mean_")) return `(Sustained Average) ${explanation}`;
+    if (featureName.startsWith("std_")) return `(High Volatility) ${explanation}`;
+    return explanation;
+  }
+  return "Anomalous deviations detected in this network telemetry feature.";
+}
+
 const THREAT_VECTORS = [
   { id: "VEC-1", name: "DoS Volumetric Saturation", actor: "Slowloris / GoldenEye", target: "10.0.0.5:80", severity: "CRITICAL", prob: "99%", recommendation: "Enforce dynamic SYN-cookies & rate-limit TCP connections per IP" },
   { id: "VEC-2", name: "SMB Named Pipe Injection", actor: "Lateral Movement", target: "10.0.0.5:445", severity: "HIGH", prob: "86%", recommendation: "Enforce SMB packet signing & block RPC inter-VLAN" },
@@ -42,13 +88,21 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('World Model');
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [scenarios, setScenarios] = useState([]);
-  const [currentScenarioId, setCurrentScenarioId] = useState('scenario_recon_to_lateral');
+  const [currentScenarioId, setCurrentScenarioId] = useState(() => sessionStorage.getItem('isLiveTracking') === 'true' ? 'live' : 'scenario_recon_to_lateral');
   const [step, setStep] = useState(0);
   const [data, setData] = useState(null);
   const [uploadedResult, setUploadedResult] = useState(null);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [isLiveTracking, setIsLiveTracking] = useState(() => sessionStorage.getItem('isLiveTracking') === 'true');
+
+  useEffect(() => {
+    sessionStorage.setItem('isLiveTracking', isLiveTracking);
+  }, [isLiveTracking]);
   const [isUploading, setIsUploading] = useState(false);
   const [selectedFile, setSelectedFile] = useState(null);
+  const [liveDetectionLog, setLiveDetectionLog] = useState([]);
+
+  
 
   // 1. Fetch available scenarios
   const fetchScenarios = () => {
@@ -62,9 +116,9 @@ export default function App() {
     fetchScenarios();
   }, []);
 
-  // 2. Fetch current step data
+    // 2. Fetch current step data (Mock/Historical)
   useEffect(() => {
-    if (!currentScenarioId) return;
+    if (!currentScenarioId || isLiveTracking) return;
     fetch(`http://127.0.0.1:8000/api/scenario/${currentScenarioId}/step/${step}`)
       .then(res => {
         if (!res.ok) throw new Error("Step fetch failed");
@@ -72,18 +126,97 @@ export default function App() {
       })
       .then(resData => setData(resData))
       .catch(err => console.error("Error loading scenario step:", err));
-  }, [currentScenarioId, step]);
+  }, [currentScenarioId, step, isLiveTracking]);
 
-  // 3. Playback Loop
+  // 3. Playback Loop (Mock/Historical)
   useEffect(() => {
     let interval = null;
-    if (isPlaying && data && data.total_steps) {
+    if (isPlaying && !isLiveTracking && data && data.total_steps) {
       interval = setInterval(() => {
         setStep(prev => (prev + 1 < data.total_steps ? prev + 1 : 0));
       }, 2000);
     }
     return () => clearInterval(interval);
-  }, [isPlaying, data]);
+  }, [isPlaying, isLiveTracking, data]);
+
+  // Live Tracking Polling & Reconstruction
+  useEffect(() => {
+    let interval = null;
+    if (isLiveTracking) {
+      const pollLive = async () => {
+        try {
+          const resScenarios = await fetch('http://127.0.0.1:8000/api/scenarios');
+          if (!resScenarios.ok) throw new Error("Scenarios fetch failed");
+          const list = await resScenarios.json();
+          setScenarios(list);
+          
+          if (list.some(s => s.id === 'live')) {
+            const res0 = await fetch('http://127.0.0.1:8000/api/scenario/live/step/0');
+            if (!res0.ok) throw new Error("Live step 0 failed");
+            const d0 = await res0.json();
+            
+            if (d0.total_steps && d0.total_steps > 0) {
+              const totalSteps = d0.total_steps;
+              setStep(totalSteps - 1); // update step counter for UI
+              
+              // 1. Fetch latest data for World Model
+              let dLatest = null;
+              const resLatest = await fetch(`http://127.0.0.1:8000/api/scenario/live/step/${totalSteps - 1}`);
+              if (resLatest.ok) {
+                 dLatest = await resLatest.json();
+                 setData(dLatest);
+              }
+              
+              // 2. Reconstruct Live Monitor History
+              setLiveDetectionLog(prev => {
+                const existingIndices = new Set(prev.map(w => w.step_index));
+                const missingIndices = [];
+                for (let i = 0; i < totalSteps; i++) {
+                  if (!existingIndices.has(i) && !(dLatest && i === totalSteps - 1)) {
+                     missingIndices.push(i);
+                  }
+                }
+                
+                if (missingIndices.length > 0) {
+                   Promise.all(missingIndices.map(i => 
+                     fetch(`http://127.0.0.1:8000/api/scenario/live/step/${i}`).then(r => r.json())
+                   )).then(results => {
+                     const fetchedWindows = results.map(r => r.current_window).filter(Boolean);
+                     setLiveDetectionLog(current => {
+                       const combined = [...current, ...fetchedWindows];
+                       if (dLatest && dLatest.current_window) combined.push(dLatest.current_window);
+                       const unique = new Map();
+                       combined.forEach(w => unique.set(w.timestamp, w));
+                       return Array.from(unique.values()).sort((a, b) => a.step_index - b.step_index).slice(-16);
+                     });
+                   }).catch(err => console.error("History fetch error:", err));
+                   return prev; // return previous state while async fetch completes
+                }
+                
+                // If no missing historical indices, just upsert the latest mutating window
+                if (!dLatest || !dLatest.current_window) return prev;
+                const combined = [...prev, dLatest.current_window];
+                const unique = new Map();
+                combined.forEach(w => unique.set(w.timestamp, w));
+                return Array.from(unique.values()).sort((a, b) => a.step_index - b.step_index).slice(-16);
+              });
+            } else {
+              setData(d0); // Pass metadata through but current_window is null
+              setLiveDetectionLog([]);
+            }
+          } else {
+            setData(null);
+          }
+        } catch (err) {
+          console.error("Live Polling Error:", err);
+        }
+      };
+      
+      pollLive(); // initial
+      interval = setInterval(pollLive, 2000);
+    }
+    return () => clearInterval(interval);
+  }, [isLiveTracking]);
 
   // 4. Handle Upload
   const handleFileUpload = async (e) => {
@@ -120,7 +253,7 @@ export default function App() {
     }
   };
 
-  if (!data || !data.current_window) {
+  if (!data || (!isLiveTracking && !data.current_window)) {
     return (
       <div className="h-screen w-screen flex items-center justify-center bg-[#070b0a] text-emerald-400 font-mono">
         <div className="flex items-center space-x-3 p-6 rounded-2xl bg-white/[0.03] border border-white/10 shadow-2xl backdrop-blur-2xl">
@@ -131,22 +264,44 @@ export default function App() {
     );
   }
 
-  const currentWindow = data.current_window;
-  const currentRisk = currentWindow.current_risk || 0;
-  const trajectoryData = Array.isArray(currentWindow.trajectory) ? currentWindow.trajectory : [];
-  const shapFeatures = Array.isArray(currentWindow.shap_features) ? currentWindow.shap_features : [];
+  const currentWindow = data.current_window || null;
+  const currentRisk = currentWindow?.current_risk || 0;
+  const trajectoryData = Array.isArray(currentWindow?.trajectory) ? currentWindow.trajectory : [];
+  const shapFeatures = Array.isArray(currentWindow?.shap_features) ? currentWindow.shap_features : [];
 
   // Trajectory Plot Data
-  const trajectoryPlot = [
+  // Prepare Live Monitor Table Data
+  let tableData = null;
+  if (isLiveTracking) {
+    if (liveDetectionLog.length > 0) {
+      tableData = liveDetectionLog.map(w => ({
+        timestamp: w.timestamp,
+        attack_prob: w.current_risk,
+        is_attack: w.current_risk >= 0.5,
+        status_label: w.current_stage
+      }));
+    } else {
+      tableData = []; // Triggers "Waiting for live telemetry..."
+    }
+  } else if (uploadedResult?.detection_log) {
+    tableData = uploadedResult.detection_log.map(r => ({
+      timestamp: r.timestamp,
+      attack_prob: r.attack_prob,
+      is_attack: r.is_attack,
+      status_label: r.is_attack ? "Flagged" : "Nominal"
+    }));
+  }
+
+  const trajectoryPlot = currentWindow ? [
     { timeKey: 'T_0 (Observed)', probability: currentRisk },
     ...trajectoryData.map((item) => ({
       timeKey: item.step_ahead || "+1min",
       probability: item.prob || 0
     }))
-  ];
+  ] : [];
 
   // Dynamic stages built from live PyTorch lookaheads
-  const dynamicStages = [
+  const dynamicStages = currentWindow ? [
     { label: "Observed Window", stage: currentWindow.current_stage || "Normal Operation", prob: currentRisk, active: true },
     ...trajectoryData.map((item) => ({
       label: `Lookahead ${item.step_ahead}`,
@@ -154,7 +309,7 @@ export default function App() {
       prob: item.prob,
       active: false
     }))
-  ];
+  ] : [];
 
   const navItems = [
     { id: 'World Model', icon: Cpu },
@@ -178,8 +333,8 @@ export default function App() {
       <aside className={`relative z-20 border-r border-white/10 bg-[#0c1310]/50 backdrop-blur-2xl transition-all duration-300 ease-in-out flex flex-col justify-between ${sidebarOpen ? 'w-64' : 'w-20'
         }`}>
         <div>
-          <div className="p-4 border-b border-white/10 flex items-center justify-between">
-            <div className="flex items-center space-x-3 overflow-hidden">
+          <div className={`p-4 border-b border-white/10 flex ${sidebarOpen ? 'items-center justify-between' : 'flex-col items-center space-y-4'}`}>
+            <div className={`flex items-center ${sidebarOpen ? 'space-x-3 overflow-hidden' : 'justify-center'}`}>
               <div className="min-w-[32px] w-8 h-8 rounded-xl bg-emerald-800/40 border border-emerald-500/40 flex items-center justify-center shadow-lg shadow-emerald-950/60 backdrop-blur-md">
                 <ShieldCheck className="w-5 h-5 text-emerald-300" />
               </div>
@@ -192,7 +347,7 @@ export default function App() {
             </div>
             <button
               onClick={() => setSidebarOpen(!sidebarOpen)}
-              className="p-1.5 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] text-slate-400 hover:text-slate-200 transition border border-white/5"
+              className="p-1.5 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] text-slate-400 hover:text-slate-200 transition border border-white/5 flex-shrink-0"
             >
               {sidebarOpen ? <PanelLeftClose className="w-4 h-4" /> : <PanelLeftOpen className="w-4 h-4" />}
             </button>
@@ -251,8 +406,17 @@ export default function App() {
               <select
                 value={currentScenarioId}
                 onChange={(e) => {
-                  setCurrentScenarioId(e.target.value);
+                  const val = e.target.value;
+                  setCurrentScenarioId(val);
                   setStep(0);
+                  setData(null);
+                  if (val === 'live') {
+                    setIsLiveTracking(true);
+                    setIsPlaying(false);
+                    setLiveDetectionLog([]);
+                  } else {
+                    setIsLiveTracking(false);
+                  }
                 }}
                 className="bg-white/[0.04] border border-white/10 text-slate-200 text-xs rounded-lg px-2.5 py-1 font-mono focus:outline-none focus:border-emerald-500"
               >
@@ -266,11 +430,27 @@ export default function App() {
           </div>
 
           <div className="flex items-center space-x-6 text-xs">
-            <div className="flex items-center space-x-1.5 px-3 py-1 rounded-full bg-emerald-950/60 border border-emerald-800/40 text-emerald-300 text-[11px] font-mono font-medium backdrop-blur-md">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
-              <span>SYNCHRONIZED ({data.total_steps} WINDOWS)</span>
-            </div>
-            <div className="text-slate-500 font-sans">TELEMETRY TIME: <span className="text-slate-300 font-mono ml-1">{currentWindow.timestamp}</span></div>
+            {isLiveTracking && (!currentWindow || data.total_steps === 0) ? (
+              <div className="flex items-center space-x-1.5 px-3 py-1 rounded-full bg-amber-950/60 border border-amber-800/40 text-amber-300 text-[11px] font-mono font-medium backdrop-blur-md">
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>
+                <span>{data.metadata?.telemetry_status === 'WARMING_UP' ? 'WARMING UP (COLLECTING CONTEXT)' : 'WAITING FOR TELEMETRY'}</span>
+              </div>
+            ) : (
+              <div className="flex items-center space-x-1.5 px-3 py-1 rounded-full bg-emerald-950/60 border border-emerald-800/40 text-emerald-300 text-[11px] font-mono font-medium backdrop-blur-md">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
+                <span>SYNCHRONIZED ({data.total_steps} WINDOWS)</span>
+              </div>
+            )}
+            <div className="text-slate-500 font-sans">TELEMETRY TIME: <span className="text-slate-300 font-mono ml-1">{currentWindow?.timestamp ? `${currentWindow.timestamp} IST` : '--'}</span></div>
+            <div className="text-slate-500 font-sans">CURRENT TIME: <span className="text-slate-300 font-mono ml-1">
+              {new Date().toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false })} IST
+            </span></div>
+            {isLiveTracking && (
+              <div className="text-slate-500 font-sans">STATUS: <span className={`font-mono ml-1 ${data.metadata?.telemetry_status === 'LIVE' ? 'text-emerald-400' : 'text-amber-400'}`}>
+                {data.metadata?.telemetry_status || (currentWindow ? 'LIVE' : 'WARMING_UP')}
+                {data.metadata?.telemetry_lag_seconds !== undefined && ` (${data.metadata.telemetry_lag_seconds}s lag)`}
+              </span></div>
+            )}
           </div>
         </header>
 
@@ -283,14 +463,14 @@ export default function App() {
               <div className="grid grid-cols-4 gap-4">
                 <div className="bg-white/[0.03] border border-white/10 p-4 rounded-2xl backdrop-blur-2xl shadow-xl">
                   <div className="text-[11px] font-sans font-medium text-slate-400 tracking-wider">FLOW THROUGHPUT</div>
-                  <div className="text-3xl font-semibold font-mono text-slate-100 mt-1">{currentWindow.flow_count} <span className="text-sm font-normal text-slate-400">/min</span></div>
-                  <div className="text-[11px] text-emerald-400 font-sans mt-1">Aggregated Window</div>
+                  <div className="text-3xl font-semibold font-mono text-slate-100 mt-1">{currentWindow?.flow_count ?? (data.metadata?.rows_ingested || 0)} <span className="text-sm font-normal text-slate-400">/min</span></div>
+                  <div className="text-[11px] text-emerald-400 font-sans mt-1">{currentWindow ? "Aggregated Window" : "Live Stream Ingest"}</div>
                 </div>
 
                 <div className="bg-white/[0.03] border border-white/10 p-4 rounded-2xl backdrop-blur-2xl shadow-xl">
                   <div className="text-[11px] font-sans font-medium text-slate-400 tracking-wider">CAUSAL DIVERGENCE</div>
                   <div className="text-xl font-semibold font-sans text-amber-300 mt-2">
-                    {currentRisk > 0.6 ? "Critical Anomaly" : currentRisk > 0.3 ? "Elevated Drift" : "Nominal Physics"}
+                    {!currentWindow ? (data.metadata?.telemetry_status === 'WARMING_UP' ? "Collecting Context" : "Awaiting Data") : currentRisk > 0.6 ? "Critical Anomaly" : currentRisk > 0.3 ? "Elevated Drift" : "Nominal Physics"}
                   </div>
                   <div className="text-[11px] text-amber-400/80 font-sans mt-1">Latent State Transition</div>
                 </div>
@@ -298,13 +478,13 @@ export default function App() {
                 <div className="bg-white/[0.03] border border-white/10 p-4 rounded-2xl backdrop-blur-2xl shadow-xl">
                   <div className="text-[11px] font-sans font-medium text-slate-400 tracking-wider">PROJECTED MITRE TACTIC</div>
                   <div className="text-sm font-semibold font-sans text-red-300 mt-2.5 truncate">
-                    {currentWindow.current_stage}
+                    {currentWindow?.current_stage || (data.metadata?.telemetry_status === 'WARMING_UP' ? "Warming Up (States < 6)" : "Nominal / Benign")}
                   </div>
                   <div className="text-[11px] text-red-400 font-sans mt-1">PyTorch 3-Head Classifier</div>
                 </div>
 
                 <div className="bg-white/[0.03] border border-white/10 p-4 rounded-2xl backdrop-blur-2xl shadow-xl">
-                  <div className="text-[11px] font-sans font-medium text-slate-400 tracking-wider">INFILTRATION PROBABILITY</div>
+                  <div className="text-[11px] font-sans font-medium text-slate-400 tracking-wider">ATTACK PROBABILITY</div>
                   <div className="text-3xl font-semibold font-mono text-[#e59866] mt-1">
                     {(currentRisk * 100).toFixed(1)}%
                   </div>
@@ -323,111 +503,175 @@ export default function App() {
                     <span>{isPlaying ? 'PAUSE TRAJECTORY' : 'SIMULATE FORWARD ROLLOUT'}</span>
                   </button>
                   <button
-                    onClick={() => setStep(prev => Math.min(prev + 1, data.total_steps - 1))}
-                    disabled={step >= data.total_steps - 1}
+                    onClick={() => setStep(prev => Math.min(prev + 1, Math.max(0, (data.total_steps || 1) - 1)))}
+                    disabled={step >= (data.total_steps || 1) - 1 || data.total_steps === 0}
                     className="p-2 bg-white/[0.04] hover:bg-white/[0.08] disabled:opacity-30 border border-white/10 rounded-xl text-slate-300 transition"
                   >
                     <SkipForward className="w-3.5 h-3.5" />
                   </button>
                   <button
                     onClick={() => setStep(0)}
-                    className="p-2 bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 rounded-xl text-slate-300 transition"
+                    disabled={data.total_steps === 0}
+                    className="p-2 bg-white/[0.04] hover:bg-white/[0.08] disabled:opacity-30 border border-white/10 rounded-xl text-slate-300 transition"
                   >
                     <RotateCcw className="w-3.5 h-3.5" />
                   </button>
                 </div>
 
                 <div className="flex items-center space-x-4">
+                  <button
+                    onClick={() => {
+                      const willBeLive = !isLiveTracking;
+                      setIsLiveTracking(willBeLive);
+                      setIsPlaying(false);
+                      setData(null);
+                      setLiveDetectionLog([]);
+                      if (willBeLive) {
+                        setCurrentScenarioId('live');
+                      } else {
+                        if (scenarios.length > 0) {
+                          setCurrentScenarioId(scenarios[0].id);
+                          setStep(0);
+                        }
+                      }
+                    }}
+                    className={`flex items-center space-x-2 px-3.5 py-2 rounded-xl border text-xs transition backdrop-blur-md font-mono ${isLiveTracking ? 'bg-emerald-600/80 hover:bg-emerald-500/80 text-white border-emerald-400 shadow-[0_0_15px_rgba(52,211,153,0.5)]' : 'bg-emerald-950/40 hover:bg-emerald-900/60 border-emerald-800/50 text-emerald-300'}`}
+                  >
+                    <Activity className={`w-3.5 h-3.5 ${isLiveTracking ? 'text-white' : 'text-emerald-400'} animate-pulse`} />
+                    <span>{isLiveTracking ? 'LIVE TRACKING ACTIVE' : 'TRACK LIVE TRAFFIC'}</span>
+                  </button>
                   <label className="cursor-pointer flex items-center space-x-2 px-3.5 py-2 rounded-xl bg-white/[0.03] hover:bg-white/[0.07] border border-white/10 text-xs text-slate-300 transition backdrop-blur-md font-mono">
                     <UploadCloud className="w-3.5 h-3.5 text-emerald-400" />
                     <span>{isUploading ? "COMPUTING INFERENCE..." : selectedFile ? selectedFile : "INGEST RAW PCAP / CSV"}</span>
                     <input type="file" className="hidden" accept=".pcap,.csv" onChange={handleFileUpload} />
                   </label>
                   <div className="text-xs font-sans text-slate-400">
-                    WINDOW: <span className="text-emerald-400 font-semibold font-mono">{step + 1}</span> / <span className="font-mono">{data.total_steps}</span>
+                    WINDOW: <span className="text-emerald-400 font-semibold font-mono">{data.total_steps > 0 ? step + 1 : 0}</span> / <span className="font-mono">{data.total_steps || 0}</span>
                   </div>
                 </div>
               </div>
 
               {/* Trajectory Plot + SHAP */}
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                <div className="lg:col-span-2 bg-white/[0.03] border border-white/10 p-6 rounded-2xl backdrop-blur-2xl shadow-xl">
-                  <div className="flex justify-between items-center mb-4">
+              {!currentWindow ? (
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                  <div className="lg:col-span-2 bg-white/[0.03] border border-white/10 p-8 rounded-2xl backdrop-blur-2xl shadow-xl flex flex-col items-center justify-center min-h-[260px] text-center font-mono">
+                    <Activity className="animate-spin w-6 h-6 text-emerald-400 mb-3" />
+                    <div className="text-emerald-400 text-sm font-semibold mb-1">
+                      {data.metadata?.telemetry_status === 'WARMING_UP' ? 'WARMING UP (COLLECTING 5-STATE CONTEXT)' : 'WAITING FOR LIVE TELEMETRY'}
+                    </div>
+                    <p className="text-slate-400 text-xs font-sans max-w-md">
+                      The PyTorch LSTM World Model requires 5 completed 1-minute historical windows before generating forward simulation trajectories (+1min to +5min).
+                    </p>
+                  </div>
+                  <div className="bg-white/[0.03] border border-white/10 p-8 rounded-2xl backdrop-blur-2xl shadow-xl flex flex-col items-center justify-center min-h-[260px] text-center font-mono text-slate-400 text-xs">
+                    <Layers className="w-6 h-6 text-slate-500 mb-2" />
+                    <span>SHAP gradient attribution will compute once the first live inference window completes.</span>
+                  </div>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                  <div className="lg:col-span-2 bg-white/[0.03] border border-white/10 p-6 rounded-2xl backdrop-blur-2xl shadow-xl">
+                    <div className="flex justify-between items-center mb-4">
+                      <div>
+                        <h2 className="text-[15px] font-semibold text-slate-100">Forward Simulation Trajectory P(S_t+k | S_t)</h2>
+                        <p className="text-[12px] text-slate-400">Autoregressive forward rollout from LSTM hidden states</p>
+                      </div>
+                      <div className="text-[11px] font-mono font-medium px-3 py-1 rounded-lg bg-emerald-950/60 border border-emerald-700/50 text-emerald-300">
+                        LOOKAHEAD: +5min
+                      </div>
+                    </div>
+
+                    <div className="h-60 w-full">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <LineChart data={trajectoryPlot}>
+                          <XAxis dataKey="timeKey" stroke="#64748b" tick={{ fontSize: 11 }} />
+                          <YAxis domain={[0, 1]} stroke="#64748b" tick={{ fontSize: 11 }} tickFormatter={(val) => `${(val * 100).toFixed(0)}%`} />
+                          <Tooltip
+                            contentStyle={{
+                              backgroundColor: 'rgba(12, 19, 16, 0.85)',
+                              backdropFilter: 'blur(16px)',
+                              borderColor: 'rgba(255, 255, 255, 0.15)',
+                              borderRadius: '12px',
+                              color: '#f8fafc'
+                            }}
+                            formatter={(val) => [`${(Number(val) * 100).toFixed(2)}%`, 'Attack Probability']}
+                          />
+                          <ReferenceLine x="T_0 (Observed)" stroke="#e59866" strokeDasharray="3 3" />
+                          <Line type="monotone" dataKey="probability" stroke="#10b981" strokeWidth={2.5} dot={{ r: 4, fill: '#10b981' }} />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+
+                  <div className="bg-white/[0.03] border border-white/10 p-6 rounded-2xl backdrop-blur-2xl shadow-xl flex flex-col">
                     <div>
-                      <h2 className="text-[15px] font-semibold text-slate-100">Forward Simulation Trajectory P(S_t+k | S_t)</h2>
-                      <p className="text-[12px] text-slate-400">Autoregressive forward rollout from LSTM hidden states</p>
+                      <h2 className="text-[15px] font-semibold text-slate-100 mb-1">Explainability (SHAP / Gradient Weights)</h2>
+                      <p className="text-[12px] text-slate-400 mb-4">Input saliency gradients w.r.t attack head</p>
                     </div>
-                    <div className="text-[11px] font-mono font-medium px-3 py-1 rounded-lg bg-emerald-950/60 border border-emerald-700/50 text-emerald-300">
-                      LOOKAHEAD: +5min
+                    <div className="flex-1 min-h-[160px] w-full mb-5">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={shapFeatures} layout="vertical">
+                          <XAxis type="number" domain={[0, 1]} stroke="#64748b" tick={{ fontSize: 11 }} />
+                          <YAxis dataKey="feature" type="category" width={140} stroke="#64748b" tick={{ fontSize: 10 }} />
+                          <Tooltip
+                            cursor={{ fill: 'rgba(255, 255, 255, 0.05)' }}
+                            contentStyle={{
+                              backgroundColor: 'rgba(12, 19, 16, 0.9)',
+                              backdropFilter: 'blur(20px)',
+                              border: '1px solid rgba(255, 255, 255, 0.2)',
+                              borderRadius: '12px',
+                              boxShadow: '0 8px 32px 0 rgba(0, 0, 0, 0.37)'
+                            }}
+                            formatter={(val) => [`${(Number(val) * 100).toFixed(1)}%`, 'Attribution Weight']}
+                          />
+                          <Bar dataKey="importance" fill="#d97736" radius={[0, 4, 4, 0]} />
+                        </BarChart>
+                      </ResponsiveContainer>
                     </div>
-                  </div>
 
-                  <div className="h-60 w-full">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={trajectoryPlot}>
-                        <XAxis dataKey="timeKey" stroke="#64748b" tick={{ fontSize: 11 }} />
-                        <YAxis domain={[0, 1]} stroke="#64748b" tick={{ fontSize: 11 }} tickFormatter={(val) => `${(val * 100).toFixed(0)}%`} />
-                        <Tooltip
-                          contentStyle={{
-                            backgroundColor: 'rgba(12, 19, 16, 0.85)',
-                            backdropFilter: 'blur(16px)',
-                            borderColor: 'rgba(255, 255, 255, 0.15)',
-                            borderRadius: '12px',
-                            color: '#f8fafc'
-                          }}
-                          formatter={(val) => [`${(Number(val) * 100).toFixed(2)}%`, 'Attack Probability']}
-                        />
-                        <ReferenceLine x="T_0 (Observed)" stroke="#e59866" strokeDasharray="3 3" />
-                        <Line type="monotone" dataKey="probability" stroke="#10b981" strokeWidth={2.5} dot={{ r: 4, fill: '#10b981' }} />
-                      </LineChart>
-                    </ResponsiveContainer>
+                    {/* TEXT EXPLANATION BOX */}
+                    <div className={`mt-auto p-4 rounded-xl shadow-inner border ${currentRisk >= 0.5 ? 'bg-amber-950/20 border-amber-900/40' : 'bg-white/[0.02] border-white/5'}`}>
+                      <div className={`flex items-center space-x-2 mb-1.5 ${currentRisk >= 0.5 ? 'text-amber-500' : 'text-slate-500'}`}>
+                        <Layers className="w-4 h-4" />
+                        <span className="text-xs font-mono font-semibold uppercase tracking-wider">
+                          {currentRisk >= 0.5 ? `PRIMARY INSIGHT: ${shapFeatures[0]?.feature || "None"}` : `NOMINAL VARIANCE: ${shapFeatures[0]?.feature || "None"}`}
+                        </span>
+                      </div>
+                      <p className={`text-[13px] font-sans leading-relaxed ${currentRisk >= 0.5 ? 'text-slate-300' : 'text-slate-500'}`}>
+                        {currentRisk >= 0.5
+                          ? getShapExplanation(shapFeatures[0]?.feature)
+                          : `Traffic is currently benign. While this feature had the highest mathematical variance in this window, it did not exceed thresholds for adversarial behavior.`
+                        }
+                      </p>
+                    </div>
                   </div>
                 </div>
-
-                <div className="bg-white/[0.03] border border-white/10 p-6 rounded-2xl backdrop-blur-2xl shadow-xl">
-                  <h2 className="text-[15px] font-semibold text-slate-100 mb-1">Explainability (SHAP / Gradient Weights)</h2>
-                  <p className="text-[12px] text-slate-400 mb-4">Input saliency gradients w.r.t attack head</p>
-                  <div className="h-60 w-full">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={shapFeatures} layout="vertical">
-                        <XAxis type="number" domain={[0, 1]} stroke="#64748b" tick={{ fontSize: 11 }} />
-                        <YAxis dataKey="feature" type="category" width={140} stroke="#64748b" tick={{ fontSize: 10 }} />
-                        <Tooltip
-                          cursor={{ fill: 'rgba(255, 255, 255, 0.05)' }}
-                          contentStyle={{
-                            backgroundColor: 'rgba(12, 19, 16, 0.9)',
-                            backdropFilter: 'blur(20px)',
-                            border: '1px solid rgba(255, 255, 255, 0.2)',
-                            borderRadius: '12px',
-                            boxShadow: '0 8px 32px 0 rgba(0, 0, 0, 0.37)'
-                          }}
-                          formatter={(val) => [`${(Number(val) * 100).toFixed(1)}%`, 'Attribution Weight']}
-                        />
-                        <Bar dataKey="importance" fill="#d97736" radius={[0, 4, 4, 0]} />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
-                </div>
-              </div>
+              )}
 
               {/* Real Model MITRE ATT&CK Stages */}
               <div className="bg-white/[0.03] border border-white/10 p-6 rounded-2xl backdrop-blur-2xl shadow-xl">
                 <h2 className="text-[15px] font-semibold text-slate-100 mb-3">Model-Inferred MITRE ATT&CK Stages (Horizon Rollout)</h2>
-                <div className="grid grid-cols-2 md:grid-cols-6 gap-2.5">
-                  {dynamicStages.map((stg, idx) => (
-                    <div
-                      key={idx}
-                      className={`p-3 rounded-xl border transition-all duration-300 backdrop-blur-xl text-center ${stg.active
-                          ? 'bg-emerald-950/80 border-emerald-400 text-emerald-200 font-semibold shadow-lg shadow-emerald-950/80 scale-105'
-                          : 'bg-white/[0.02] border-white/5 text-slate-400'
-                        }`}
-                    >
-                      <div className="text-[10px] uppercase font-mono font-medium tracking-wider text-slate-400 mb-1">{stg.label}</div>
-                      <div className="text-[12px] leading-snug font-sans font-medium text-slate-200 truncate">{stg.stage}</div>
-                      <div className="text-[10px] font-mono text-emerald-400 mt-1">P: {(stg.prob * 100).toFixed(1)}%</div>
-                    </div>
-                  ))}
-                </div>
+                {currentWindow ? (
+                  <div className="grid grid-cols-2 md:grid-cols-6 gap-2.5">
+                    {dynamicStages.map((stg, idx) => (
+                      <div
+                        key={idx}
+                        className={`p-3 rounded-xl border transition-all duration-300 backdrop-blur-xl text-center ${stg.active
+                            ? 'bg-emerald-950/80 border-emerald-400 text-emerald-200 font-semibold shadow-lg shadow-emerald-950/80 scale-105'
+                            : 'bg-white/[0.02] border-white/5 text-slate-400'
+                          }`}
+                      >
+                        <div className="text-[10px] uppercase font-mono font-medium tracking-wider text-slate-400 mb-1">{stg.label}</div>
+                        <div className="text-[12px] leading-snug font-sans font-medium text-slate-200 truncate">{stg.stage}</div>
+                        <div className="text-[10px] font-mono text-emerald-400 mt-1">P: {(stg.prob * 100).toFixed(1)}%</div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="py-6 text-center text-slate-500 font-mono text-xs">
+                    Awaiting live prediction window to compute autoregressive forward stages (+1min ... +5min).
+                  </div>
+                )}
               </div>
             </>
           )}
@@ -440,7 +684,12 @@ export default function App() {
                   <h2 className="text-[15px] font-semibold text-slate-100">Live Traffic Ingestion & Anomaly Monitor</h2>
                   <p className="text-[12px] text-slate-400">1-Minute Window Inference from PyTorch LSTM World Model</p>
                 </div>
-                {uploadedResult?.detection_summary && (
+                {isLiveTracking ? (
+                  <div className="flex items-center space-x-2 text-[11px] font-mono text-emerald-400 bg-emerald-950/60 border border-emerald-800/40 px-3 py-1.5 rounded-lg">
+                    <Wifi className="w-3.5 h-3.5 animate-pulse" />
+                    <span>LIVE TRACKING: {tableData?.filter(r => r.is_attack).length || 0} / {tableData?.length || 0} ANOMALIES</span>
+                  </div>
+                ) : uploadedResult?.detection_summary && (
                   <div className="flex items-center space-x-2 text-[11px] font-mono text-emerald-400 bg-emerald-950/60 border border-emerald-800/40 px-3 py-1.5 rounded-lg">
                     <Wifi className="w-3.5 h-3.5 animate-pulse" />
                     <span>DETECTED {uploadedResult.detection_summary.anomalous_windows_detected} / {uploadedResult.detection_summary.total_windows_evaluated} ANOMALIES</span>
@@ -449,7 +698,19 @@ export default function App() {
               </div>
 
               {/* Status Banner */}
-              {uploadedResult?.detection_summary ? (
+              {isLiveTracking && tableData && tableData.length > 0 ? (
+                tableData.some(r => r.is_attack) ? (
+                  <div className="p-3.5 rounded-xl bg-red-950/40 border border-red-800/50 flex items-center space-x-3 text-red-300 text-xs font-mono">
+                    <AlertTriangle className="w-4 h-4 text-red-400" />
+                    <span>🚨 LIVE ATTACK DETECTED</span>
+                  </div>
+                ) : (
+                  <div className="p-3.5 rounded-xl bg-emerald-950/40 border border-emerald-800/50 flex items-center space-x-3 text-emerald-300 text-xs font-mono">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                    <span>✓ LIVE TRAFFIC NOMINAL</span>
+                  </div>
+                )
+              ) : uploadedResult?.detection_summary ? (
                 uploadedResult.detection_summary.anomalous_windows_detected > 0 ? (
                   <div className="p-3.5 rounded-xl bg-red-950/40 border border-red-800/50 flex items-center space-x-3 text-red-300 text-xs font-mono">
                     <AlertTriangle className="w-4 h-4 text-red-400" />
@@ -475,10 +736,10 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-white/5">
-                    {uploadedResult?.detection_log ? (
-                      uploadedResult.detection_log.map((row, idx) => (
+                    {tableData && tableData.length > 0 ? (
+                      tableData.map((row, idx) => (
                         <tr key={idx} className="hover:bg-white/[0.03] transition">
-                          <td className="py-2.5 px-3 text-slate-300">{row.timestamp}</td>
+                          <td className="py-2.5 px-3 text-slate-300">{row.timestamp} IST</td>
                           <td className="py-2.5 px-3 text-amber-300 font-semibold">{row.attack_prob.toFixed(4)}</td>
                           <td className="py-2.5 px-3">
                             <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${row.is_attack ? 'bg-red-950/80 text-red-300 border border-red-800' : 'bg-emerald-950/80 text-emerald-300 border border-emerald-800'}`}>
@@ -489,12 +750,12 @@ export default function App() {
                             {row.is_attack ? (
                               <span className="text-red-400 font-semibold flex items-center space-x-1">
                                 <AlertTriangle className="w-3 h-3 inline mr-1" />
-                                Flagged
+                                {row.status_label}
                               </span>
                             ) : (
                               <span className="text-emerald-400 flex items-center space-x-1">
                                 <CheckCircle2 className="w-3 h-3 inline mr-1" />
-                                Nominal
+                                {row.status_label}
                               </span>
                             )}
                           </td>
@@ -503,7 +764,7 @@ export default function App() {
                     ) : (
                       <tr>
                         <td colSpan={4} className="py-6 text-center text-slate-500">
-                          Upload a test CSV via "INGEST RAW PCAP / CSV" to stream real detection logs.
+                          {isLiveTracking ? "Waiting for live telemetry..." : 'Upload a test CSV via "INGEST RAW PCAP / CSV" to stream real detection logs.'}
                         </td>
                       </tr>
                     )}
@@ -519,18 +780,24 @@ export default function App() {
               <div className="grid grid-cols-3 gap-6">
                 <div className="p-6 rounded-2xl bg-white/[0.03] border border-white/10 backdrop-blur-2xl shadow-xl">
                   <div className="text-[11px] font-sans font-medium uppercase tracking-wider text-slate-400 mb-1">NETWORK HEALTH INDEX</div>
-                  <div className="text-3xl font-semibold font-mono text-emerald-400">92.4%</div>
-                  <p className="text-[13px] text-slate-400 mt-2">Nominal baseline across 41 internal industrial subnets.</p>
+                  <div className={`text-3xl font-semibold font-mono ${uploadedResult?.detection_summary?.anomalous_windows_detected > 0 ? 'text-amber-400' : 'text-emerald-400'}`}>
+                    {uploadedResult?.detection_summary ?
+                      ((1 - (uploadedResult.detection_summary.anomalous_windows_detected / uploadedResult.detection_summary.total_windows_evaluated)) * 100).toFixed(1) + '%'
+                      : '100%'}
+                  </div>
+                  <p className="text-[13px] text-slate-400 mt-2">Nominal baseline across processed traffic sequences.</p>
                 </div>
                 <div className="p-6 rounded-2xl bg-white/[0.03] border border-white/10 backdrop-blur-2xl shadow-xl">
                   <div className="text-[11px] font-sans font-medium uppercase tracking-wider text-slate-400 mb-1">PROACTIVE DEFENSE BUFFER</div>
-                  <div className="text-3xl font-semibold font-mono text-amber-300">+5.0 min</div>
+                  <div className="text-3xl font-semibold font-mono text-emerald-300">+{trajectoryData.length || 5} min</div>
                   <p className="text-[13px] text-slate-400 mt-2">Forward horizon lookahead before compromise cascades.</p>
                 </div>
                 <div className="p-6 rounded-2xl bg-white/[0.03] border border-white/10 backdrop-blur-2xl shadow-xl">
-                  <div className="text-[11px] font-sans font-medium uppercase tracking-wider text-slate-400 mb-1">ISOLATION READINESS</div>
-                  <div className="text-3xl font-semibold font-sans text-rose-400">Armed</div>
-                  <p className="text-[13px] text-slate-400 mt-2">Autonomous micro-segmentation ready for deployment.</p>
+                  <div className="text-[11px] font-sans font-medium uppercase tracking-wider text-slate-400 mb-1">CURRENT POSTURE / ISOLATION READINESS</div>
+                  <div className={`text-3xl font-semibold font-sans ${currentRisk >= 0.5 ? 'text-rose-400' : 'text-emerald-400'}`}>
+                    {currentRisk >= 0.5 ? 'Engaged / Armed' : 'Monitoring / Ready'}
+                  </div>
+                  <p className="text-[13px] text-slate-400 mt-2">Autonomous micro-segmentation readiness.</p>
                 </div>
               </div>
             </div>
@@ -550,6 +817,35 @@ export default function App() {
               </div>
 
               <div className="grid grid-cols-1 gap-4">
+                <h3 className="text-sm font-semibold text-emerald-400 mb-2 mt-2">Live Dynamic Detection</h3>
+                {currentRisk >= 0.5 ? (
+                  <div className="p-5 rounded-2xl bg-white/[0.03] border border-red-500/30 backdrop-blur-2xl shadow-xl flex justify-between items-center">
+                    <div className="space-y-1">
+                      <div className="flex items-center space-x-3">
+                        <span className="text-xs font-mono font-semibold text-red-400">VEC-{step}</span>
+                        <span className="text-[14px] font-semibold text-slate-100 font-sans">{currentWindow?.current_stage || "Unknown Threat"}</span>
+                        <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-red-950/60 border border-red-800/50 text-red-300">{currentRisk > 0.8 ? "CRITICAL" : "HIGH"}</span>
+                      </div>
+                      <div className="text-[13px] text-slate-400 font-sans">
+                        Target Asset: <span className="font-mono text-slate-300">{data.metadata?.target_asset || "Network Gateway"}</span> ➔ Risk Probability: <span className="font-mono text-red-300">{(currentRisk * 100).toFixed(1)}%</span>
+                      </div>
+                      <div className="text-[12px] text-emerald-300/90 font-sans pt-1">
+                        Recommended Defense: <span className="font-medium text-emerald-300">Quarantine subnet and analyze {shapFeatures[0]?.feature || "anomalous traffic"} spike</span>
+                      </div>
+                    </div>
+                    <button className="px-4 py-2 rounded-xl bg-red-900/60 hover:bg-red-800 text-white font-sans font-medium text-xs border border-red-500/40 shadow-lg shadow-red-950/50 transition">
+                      ENFORCE ACL BLOCK
+                    </button>
+                  </div>
+                ) : (
+                  <div className="p-10 text-center rounded-2xl bg-white/[0.02] border border-white/5 backdrop-blur-2xl">
+                    <CheckCircle2 className="w-10 h-10 text-emerald-500/50 mx-auto mb-3" />
+                    <h3 className="text-slate-300 font-sans font-medium text-sm mb-1">No Active Threats Detected</h3>
+                    <p className="text-slate-500 text-xs font-sans">The world model predicts nominal behavior for the current time window.</p>
+                  </div>
+                )}
+
+                <h3 className="text-sm font-semibold text-emerald-400 mb-2 mt-6">Reference Threat Library (Static Policies)</h3>
                 {THREAT_VECTORS.map((vec) => (
                   <div key={vec.id} className="p-5 rounded-2xl bg-white/[0.03] border border-white/10 backdrop-blur-2xl shadow-xl flex justify-between items-center">
                     <div className="space-y-1">
@@ -576,22 +872,48 @@ export default function App() {
 
           {/* VIEW: MITRE */}
           {activeTab === 'MITRE' && (
-            <div className="bg-white/[0.03] border border-white/10 p-6 rounded-2xl backdrop-blur-2xl shadow-xl">
-              <h2 className="text-lg font-semibold text-slate-100 font-sans mb-1">MITRE ATT&CK Matrix Alignment</h2>
-              <p className="text-[13px] text-slate-400 font-sans mb-6">Autonomous mapping of predicted latent network states to enterprise tactics</p>
+            <div className="space-y-6">
+              <div className="bg-white/[0.03] border border-white/10 p-6 rounded-2xl backdrop-blur-2xl shadow-xl">
+                <h2 className="text-lg font-semibold text-slate-100 font-sans mb-1">MITRE ATT&CK Matrix Alignment (Live Inferred)</h2>
+                <p className="text-[13px] text-slate-400 font-sans mb-6">Autonomous mapping of predicted latent network states to enterprise tactics based on current trajectory.</p>
 
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
-                <div className="p-4 rounded-xl bg-white/[0.02] border border-white/10">
-                  <div className="text-emerald-400 font-mono font-semibold text-xs mb-2">TA0006 - CREDENTIAL ACCESS</div>
-                  <p className="text-slate-400 text-[13px] font-sans leading-relaxed">Repeated authentication flow attempts over standard remote management ports.</p>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+                  {currentRisk < 0.5 && !dynamicStages.some(stg => stg.prob >= 0.5) ? (
+                    <div className="col-span-3 p-10 rounded-xl bg-white/[0.02] border border-white/10 text-center">
+                      <ShieldCheck className="w-10 h-10 text-emerald-500/50 mx-auto mb-3" />
+                      <div className="text-emerald-400 font-mono font-semibold text-sm mb-2">NOMINAL OPERATION</div>
+                      <p className="text-slate-400 text-[13px] font-sans">No adversarial MITRE ATT&CK tactics detected in the current or forecasted latent states.</p>
+                    </div>
+                  ) : (
+                    [...new Map(dynamicStages.filter(stg => stg.prob >= 0.5 && stg.stage !== "Benign" && stg.stage !== "Normal Operation").map(item => [item.stage, item])).values()].map((stg, idx) => (
+                      <div key={idx} className="p-4 rounded-xl bg-white/[0.02] border border-red-500/30">
+                        <div className="text-red-400 font-mono font-semibold text-xs mb-2 uppercase">{stg.stage}</div>
+                        <p className="text-slate-400 text-[13px] font-sans leading-relaxed">
+                          The tactical classifier has aligned the network physics for <b>{stg.label}</b> to this specific threat vector with {(stg.prob * 100).toFixed(1)}% confidence.
+                        </p>
+                      </div>
+                    ))
+                  )}
                 </div>
-                <div className="p-4 rounded-xl bg-white/[0.02] border border-white/10">
-                  <div className="text-amber-400 font-mono font-semibold text-xs mb-2">TA0040 - DOS / DDOS IMPACT</div>
-                  <p className="text-slate-400 text-[13px] font-sans leading-relaxed">High volumetric saturation and anomalous packet length distribution collapses.</p>
-                </div>
-                <div className="p-4 rounded-xl bg-white/[0.02] border border-white/10">
-                  <div className="text-red-400 font-mono font-semibold text-xs mb-2">TA0008 - LATERAL MOVEMENT</div>
-                  <p className="text-slate-400 text-[13px] font-sans leading-relaxed">Subnet pivot attempts using named pipes and remote administrative shares.</p>
+              </div>
+
+              <div className="bg-white/[0.03] border border-white/10 p-6 rounded-2xl backdrop-blur-2xl shadow-xl">
+                <h2 className="text-lg font-semibold text-slate-100 font-sans mb-1">Common Monitored Tactics (Reference)</h2>
+                <p className="text-[13px] text-slate-400 font-sans mb-6">Static knowledge base for typical industrial environment threats.</p>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+                  <div className="p-4 rounded-xl bg-white/[0.02] border border-white/10">
+                    <div className="text-emerald-400 font-mono font-semibold text-xs mb-2">TA0006 - CREDENTIAL ACCESS</div>
+                    <p className="text-slate-400 text-[13px] font-sans leading-relaxed">Repeated authentication flow attempts over standard remote management ports.</p>
+                  </div>
+                  <div className="p-4 rounded-xl bg-white/[0.02] border border-white/10">
+                    <div className="text-amber-400 font-mono font-semibold text-xs mb-2">TA0040 - DOS / DDOS IMPACT</div>
+                    <p className="text-slate-400 text-[13px] font-sans leading-relaxed">High volumetric saturation and anomalous packet length distribution collapses.</p>
+                  </div>
+                  <div className="p-4 rounded-xl bg-white/[0.02] border border-white/10">
+                    <div className="text-red-400 font-mono font-semibold text-xs mb-2">TA0008 - LATERAL MOVEMENT</div>
+                    <p className="text-slate-400 text-[13px] font-sans leading-relaxed">Subnet pivot attempts using named pipes and remote administrative shares.</p>
+                  </div>
                 </div>
               </div>
             </div>
@@ -599,38 +921,80 @@ export default function App() {
 
           {/* VIEW: REPORTS */}
           {activeTab === 'Reports' && (
-            <div className="bg-white/[0.03] border border-white/10 p-6 rounded-2xl backdrop-blur-2xl shadow-xl">
-              <h2 className="text-lg font-semibold text-slate-100 font-sans mb-1">Empirical Benchmark: World Model vs Static ML</h2>
-              <p className="text-[13px] text-slate-400 font-sans mb-6">Validation across multi-stage kill chains in CIC-IDS2018</p>
+            <div className="space-y-6">
+              <div className="bg-white/[0.03] border border-white/10 p-6 rounded-2xl backdrop-blur-2xl shadow-xl">
+                <h2 className="text-lg font-semibold text-slate-100 font-sans mb-1">Live Session Ingestion Report</h2>
+                <p className="text-[13px] text-slate-400 font-sans mb-6">Real-time inference statistics for the currently tracked network traffic.</p>
 
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-xs border-collapse">
-                  <thead>
-                    <tr className="border-b border-white/10 text-slate-400 font-sans font-medium uppercase tracking-wider text-[11px]">
-                      <th className="py-3 px-4">DETECTION ENGINE</th>
-                      <th className="py-3 px-4">LEAD-TIME ADVANTAGE</th>
-                      <th className="py-3 px-4">F1-SCORE</th>
-                      <th className="py-3 px-4">FALSE POSITIVE RATE</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-white/5 font-mono text-xs">
-                    <tr>
-                      <td className="py-3 px-4 text-slate-300 font-sans">Logistic Regression Baseline</td>
-                      <td className="py-3 px-4 text-slate-400">0.0s (Alerts during exploit)</td>
-                      <td className="py-3 px-4 text-slate-400">0.0208</td>
-                      <td className="py-3 px-4 text-red-400/80">5.24%</td>
-                    </tr>
-                    <tr className="bg-emerald-950/30 text-emerald-300 font-semibold">
-                      <td className="py-3 px-4 flex items-center space-x-2 font-sans">
-                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                        <span>Latent World Model (Trained)</span>
-                      </td>
-                      <td className="py-3 px-4 text-emerald-400">+5.0 min (Forward Horizon)</td>
-                      <td className="py-3 px-4">0.5837</td>
-                      <td className="py-3 px-4 text-emerald-400">2.47%</td>
-                    </tr>
-                  </tbody>
-                </table>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs border-collapse">
+                    <thead>
+                      <tr className="border-b border-white/10 text-slate-400 font-sans font-medium uppercase tracking-wider text-[11px]">
+                        <th className="py-3 px-4">METRIC</th>
+                        <th className="py-3 px-4">VALUE</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-white/5 font-mono text-xs">
+                      <tr>
+                        <td className="py-3 px-4 text-slate-300 font-sans">Total Time Windows Evaluated</td>
+                        <td className="py-3 px-4 text-slate-400">{uploadedResult?.detection_summary?.total_windows_evaluated || data.total_steps} windows (1 min each)</td>
+                      </tr>
+                      <tr>
+                        <td className="py-3 px-4 text-slate-300 font-sans">Anomalous Windows Detected</td>
+                        <td className={`py-3 px-4 ${uploadedResult?.detection_summary?.anomalous_windows_detected > 0 ? 'text-red-400' : 'text-emerald-400'}`}>
+                          {uploadedResult?.detection_summary?.anomalous_windows_detected || 0}
+                        </td>
+                      </tr>
+                      <tr className="bg-white/[0.02]">
+                        <td className="py-3 px-4 text-slate-300 font-sans">Current Flow Throughput</td>
+                        <td className="py-3 px-4 text-slate-400">{currentWindow?.flow_count || 0} flows/min</td>
+                      </tr>
+                      <tr>
+                        <td className="py-3 px-4 text-slate-300 font-sans">Latest Peak Risk Probability</td>
+                        <td className={`py-3 px-4 ${(currentRisk * 100) > 50 ? 'text-red-400 font-bold' : 'text-slate-400'}`}>{(currentRisk * 100).toFixed(2)}%</td>
+                      </tr>
+                      <tr>
+                        <td className="py-3 px-4 text-slate-300 font-sans">Active Session ID</td>
+                        <td className="py-3 px-4 text-slate-400 truncate max-w-xs">{currentScenarioId}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div className="bg-white/[0.03] border border-white/10 p-6 rounded-2xl backdrop-blur-2xl shadow-xl">
+                <h2 className="text-lg font-semibold text-slate-100 font-sans mb-1">Empirical Benchmark: World Model vs Static ML</h2>
+                <p className="text-[13px] text-slate-400 font-sans mb-6">Validation across multi-stage kill chains in CIC-IDS2018</p>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs border-collapse">
+                    <thead>
+                      <tr className="border-b border-white/10 text-slate-400 font-sans font-medium uppercase tracking-wider text-[11px]">
+                        <th className="py-3 px-4">DETECTION ENGINE</th>
+                        <th className="py-3 px-4">LEAD-TIME ADVANTAGE</th>
+                        <th className="py-3 px-4">F1-SCORE</th>
+                        <th className="py-3 px-4">FALSE POSITIVE RATE</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-white/5 font-mono text-xs">
+                      <tr>
+                        <td className="py-3 px-4 text-slate-300 font-sans">Logistic Regression Baseline</td>
+                        <td className="py-3 px-4 text-slate-400">0.0s (Alerts during exploit)</td>
+                        <td className="py-3 px-4 text-slate-400">0.0208</td>
+                        <td className="py-3 px-4 text-red-400/80">5.24%</td>
+                      </tr>
+                      <tr className="bg-emerald-950/30 text-emerald-300 font-semibold">
+                        <td className="py-3 px-4 flex items-center space-x-2 font-sans">
+                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                          <span>Latent World Model (Trained)</span>
+                        </td>
+                        <td className="py-3 px-4 text-emerald-400">+5.0 min (Forward Horizon)</td>
+                        <td className="py-3 px-4">0.5837</td>
+                        <td className="py-3 px-4 text-emerald-400">2.47%</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
               </div>
             </div>
           )}

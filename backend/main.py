@@ -1,4 +1,6 @@
 import io
+import asyncio
+import redis
 import json
 import uuid
 from pathlib import Path
@@ -10,73 +12,13 @@ import torch
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 
-from model import (
-    LSTMWorldModel, ManualScaler, signed_log1p, normalize_col,
-    build_agg_names, MITRE_NAMES,
-)
-
-app = FastAPI(title="NCIIPC Cyber World Model Defense API")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-BASE_DIR = Path(__file__).parent
-SCENARIOS_PATH = BASE_DIR / "scenarios.json"
-CHECKPOINT_PATH = BASE_DIR / "lstm_world_model.pth"
-
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-# ─── Load trained checkpoint once at startup ───────────────────────────────
-_checkpoint = None
-_model: Optional[LSTMWorldModel] = None
-_scaler: Optional[ManualScaler] = None
-_feature_cols: List[str] = []
-_seq_len: int = 5
-_best_threshold: float = 0.5
-_benign_mse_baseline: Optional[dict] = None
-_k_steps: int = 5
-_window_size: str = "1min"
-_agg_names: List[str] = []
-
-
-def _load_checkpoint():
-    global _checkpoint, _model, _scaler, _feature_cols, _seq_len
-    global _best_threshold, _benign_mse_baseline, _k_steps, _window_size, _agg_names
-
-    if not CHECKPOINT_PATH.exists():
-        # Server can still run in "static scenarios only" mode.
-        print(f"[warn] {CHECKPOINT_PATH} not found — /api/upload-csv will be disabled.")
-        return
-
-    ckpt = torch.load(CHECKPOINT_PATH, map_location=device, weights_only=False)
-    _feature_cols = ckpt["feature_cols"]
-    state_dim = ckpt["state_dim"]
-    _seq_len = ckpt["seq_len"]
-    _best_threshold = float(ckpt["best_threshold"])
-    _benign_mse_baseline = ckpt.get("benign_mse_baseline")
-    cfg = ckpt.get("config", {})
-    _k_steps = cfg.get("k_steps", 5)
-    _window_size = cfg.get("window_size", "1min")
-
-import json
-import uuid
-from pathlib import Path
-from typing import Dict, List, Optional
-
-import numpy as np
-import pandas as pd
-import torch
-from fastapi import FastAPI, HTTPException, UploadFile, File
-from fastapi.middleware.cors import CORSMiddleware
-
-from model import (
-    LSTMWorldModel, ManualScaler, signed_log1p, normalize_col,
-    build_agg_names, MITRE_NAMES,
+from .model import (
+    LSTMWorldModel,
+    ManualScaler,
+    signed_log1p,
+    normalize_col,
+    build_agg_names,
+    MITRE_NAMES,
 )
 
 app = FastAPI(title="NCIIPC Cyber World Model Defense API")
@@ -142,13 +84,243 @@ def _load_checkpoint():
     globals()["_checkpoint"] = ckpt
     globals()["_model"] = model
     globals()["_scaler"] = scaler
-    print(f"[ok] Loaded checkpoint: {len(_feature_cols)} features, seq_len={_seq_len}, "
-          f"threshold={_best_threshold:.4f}")
+    print(
+        f"[ok] Loaded checkpoint: {len(_feature_cols)} features, seq_len={_seq_len}, "
+        f"threshold={_best_threshold:.4f}"
+    )
 
 
 _load_checkpoint()
 
 # ─── scenarios.json persistence (static scenarios + ingested uploads) ──────
+
+
+
+# ─── Live Redis Stream Consumer ────────────────────────────────────────────
+
+async def redis_stream_consumer():
+    import redis.asyncio as aioredis
+    import dateutil.parser
+    import time
+    import traceback
+    import pandas as pd
+    import asyncio
+    from config.config import NETWORK_INTERFACE
+    
+    r = aioredis.Redis(host="127.0.0.1", port=6379, db=0, decode_responses=True)
+    
+    # 1. Establish precise Redis Stream startup boundary
+    last_id = "$"
+    recent_flows = []
+    
+    try:
+        # Fetch the most recent 2000 flows to find recent history
+        recent_raw = await r.xrevrange("cic:flows:stream", max="+", min="-", count=2000)
+        if recent_raw:
+            newest_id, newest_fields = recent_raw[0]
+            newest_ts_str = newest_fields.get("timestamp", "")
+            
+            newest_ts = time.time()
+            if newest_ts_str:
+                try:
+                    newest_ts = dateutil.parser.parse(newest_ts_str).timestamp()
+                except Exception:
+                    pass
+            
+            cutoff_ts = newest_ts - 400
+            target_last_id = newest_id
+            
+            valid_recent = []
+            for eid, fields in recent_raw:
+                ts_str = fields.get("timestamp", "")
+                if ts_str:
+                    try:
+                        ts = dateutil.parser.parse(ts_str).timestamp()
+                        if ts >= cutoff_ts:
+                            target_last_id = eid
+                            # Add to recent flows (prepend because we're iterating backwards)
+                            valid_recent.insert(0, dict(fields))
+                        else:
+                            break
+                    except Exception:
+                        pass
+            
+            recent_flows = valid_recent
+            # We set last_id to newest_id so that XREAD catches only genuinely NEW flows
+            # that arrive *after* this startup. The old flows are securely in `recent_flows`.
+            last_id = newest_id
+    except Exception as e:
+        print(f"[Live Inference] Failed to establish stream boundary: {e}")
+        last_id = "$"
+    
+    # Wait for model to load
+    while _model is None:
+        await asyncio.sleep(1)
+        
+    print(f"[Live Inference] Starting Redis stream consumer... (last_id={last_id})", flush=True)
+    
+    
+    # Reset live runtime state in scenarios.json upon backend restart
+    data = load_data()
+    data["live"] = {
+        "metadata": {
+            "name": "Live Telemetry",
+            "target_asset": f"{NETWORK_INTERFACE} (Live Capture)",
+            "total_windows": 0,
+            "detected_features": [],
+            "rows_ingested": 0,
+            "attack_windows_detected": 0,
+            "telemetry_status": "WARMING_UP",
+            "telemetry_lag_seconds": 0,
+        },
+        "windows": []
+    }
+    save_data(data)
+    
+    last_inferred_ts = None
+
+    
+    while True:
+        try:
+            # Block for up to 2 seconds waiting for new stream entries
+            response = await r.xread({"cic:flows:stream": last_id}, count=1000, block=2000)
+            new_entries = 0
+            if response:
+                for stream_key, entries in response:
+                    for entry_id, fields in entries:
+                        last_id = entry_id
+                        flow = dict(fields)
+                        recent_flows.append(flow)
+                        new_entries += 1
+                        
+            if new_entries > 0:
+                print(f"[Live Inference] Received {new_entries} new flows. last_id={last_id}", flush=True)
+                
+            max_ts = 0.0
+            for f in recent_flows:
+                ts_str = f.get("timestamp", "")
+                if ts_str:
+                    try:
+                        ts = dateutil.parser.parse(ts_str).timestamp()
+                        if ts > max_ts:
+                            max_ts = ts
+                    except Exception:
+                        pass
+                        
+            is_disconnected = False
+            if max_ts == 0.0:
+                is_disconnected = True
+                max_ts = time.time()
+                
+            cutoff = max_ts - 400
+            
+            valid_flows = []
+            for f in recent_flows:
+                ts_str = f.get("timestamp", "")
+                if not ts_str:
+                    continue
+                try:
+                    if dateutil.parser.parse(ts_str).timestamp() > cutoff:
+                        valid_flows.append(f)
+                except Exception:
+                    pass
+            
+            recent_flows = valid_flows
+            
+            # Stale logic
+            lag_seconds = time.time() - max_ts
+            if is_disconnected:
+                telemetry_status = "DISCONNECTED"
+            elif lag_seconds > 120:
+                telemetry_status = "STALE"
+            else:
+                telemetry_status = "LIVE"
+
+            data = load_data()
+            scenario_id = "live"
+            scenario_entry = data.get(scenario_id, {
+                "metadata": {
+                    "name": "Live Telemetry",
+                    "target_asset": f"{NETWORK_INTERFACE} (Live Capture)",
+                    "total_windows": 0,
+                    "detected_features": [],
+                    "rows_ingested": 0,
+                    "attack_windows_detected": 0,
+                },
+                "windows": []
+            })
+            
+            scenario_entry["metadata"]["telemetry_status"] = telemetry_status
+            scenario_entry["metadata"]["telemetry_lag_seconds"] = int(lag_seconds)
+            # Ensure metadata always reflects correct interface
+            scenario_entry["metadata"]["target_asset"] = f"{NETWORK_INTERFACE} (Live Capture)"
+            
+            if len(recent_flows) > 0:
+                df = pd.DataFrame(recent_flows)
+                try:
+                    states, timestamps, counts, missing_idx = _aggregate_windows(df)
+                    if len(states) >= _seq_len + 1:
+                        # Prevent duplicate inference
+                        latest_window_ts = timestamps[-1]
+                        
+                        if last_inferred_ts == latest_window_ts:
+                            # We have already inferred this exact minute, skip!
+                            pass
+                        else:
+                            # Wrap synchronous inference in thread
+                            windows = await asyncio.to_thread(
+                                _run_model_inference, states, timestamps, counts, missing_idx
+                            )
+                            if windows:
+                                last_inferred_ts = latest_window_ts
+                                
+                                # Merge historical live windows
+                                existing_windows = scenario_entry.get("windows", [])
+                                existing_dict = {w["timestamp"]: w for w in existing_windows}
+                                for w in windows:
+                                    existing_dict[w["timestamp"]] = w
+                                
+                                merged_windows = list(existing_dict.values())
+                                merged_windows.sort(key=lambda x: x["timestamp"])
+                                
+                                # Bound backend prediction history to 60 windows
+                                merged_windows = merged_windows[-60:]
+                                
+                                # Reassign step_index sequentially
+                                for idx, w in enumerate(merged_windows):
+                                    w["step_index"] = idx
+                                    
+                                n_attack = sum(1 for w in merged_windows if w["current_risk"] >= _best_threshold)
+                                scenario_entry["metadata"]["total_windows"] = len(merged_windows)
+                                scenario_entry["metadata"]["detected_features"] = list(df.columns)[:8]
+                                scenario_entry["metadata"]["rows_ingested"] = len(recent_flows)
+                                scenario_entry["metadata"]["attack_windows_detected"] = n_attack
+                                scenario_entry["windows"] = merged_windows
+                                
+                                print(f"[Live Inference] Inferred windows. Total history: {len(merged_windows)}", flush=True)
+                    else:
+                        if new_entries > 0:
+                            print(f"[Live Inference] Warming up... (States: {len(states)}/{_seq_len + 1})", flush=True)
+                        if telemetry_status == "LIVE":
+                            scenario_entry["metadata"]["telemetry_status"] = "WARMING_UP"
+                except Exception as e:
+                    print(f"[Live Inference] Error in processing: {e}", flush=True)
+                    traceback.print_exc()
+            
+            data[scenario_id] = scenario_entry
+            save_data(data)
+
+        except Exception as e:
+            print(f"[Live Inference] Critical consumer error: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
+            await asyncio.sleep(2)
+
+
+@app.on_event("startup")
+async def startup_event():
+    global _consumer_task
+    _consumer_task = asyncio.create_task(redis_stream_consumer())
 
 def load_data() -> Dict:
     if not SCENARIOS_PATH.exists():
@@ -166,7 +338,11 @@ def save_data(data: Dict) -> None:
 def list_scenarios():
     data = load_data()
     return [
-        {"id": k, "name": v["metadata"]["name"], "target": v["metadata"]["target_asset"]}
+        {
+            "id": k,
+            "name": v["metadata"]["name"],
+            "target": v["metadata"].get("target_asset", "Unknown"),
+        }
         for k, v in data.items()
     ]
 
@@ -178,6 +354,15 @@ def get_scenario_step(scenario_id: str, step_idx: int):
         raise HTTPException(status_code=404, detail="Scenario not found")
 
     windows = data[scenario_id]["windows"]
+    
+    # Safely handle empty live sessions (warming up)
+    if len(windows) == 0:
+        return {
+            "metadata": data[scenario_id]["metadata"],
+            "current_window": None,
+            "total_steps": 0,
+        }
+        
     if step_idx < 0 or step_idx >= len(windows):
         raise HTTPException(status_code=400, detail="Step out of range")
 
@@ -189,6 +374,7 @@ def get_scenario_step(scenario_id: str, step_idx: int):
 
 
 # ─── Real inference on an uploaded CICFlowMeter-style CSV ──────────────────
+
 
 def _aggregate_windows(df: pd.DataFrame) -> tuple:
     """Reproduces the notebook's 1-minute aggregation (Cell 16) for a
@@ -228,7 +414,9 @@ def _aggregate_windows(df: pd.DataFrame) -> tuple:
     df = df.dropna(subset=["Timestamp"])
 
     present = set(df.columns)
-    missing_feature_indices = [i for i, col in enumerate(_feature_cols) if col not in present]
+    missing_feature_indices = [
+        i for i, col in enumerate(_feature_cols) if col not in present
+    ]
 
     for col in _feature_cols:
         if col not in df.columns:
@@ -242,14 +430,22 @@ def _aggregate_windows(df: pd.DataFrame) -> tuple:
     for wkey, group in df.groupby("_window"):
         X = group[_feature_cols].values.astype(np.float64)
         n = len(X)
-        acc = accumulators.setdefault(wkey, {
-            "count": 0, "sum": np.zeros(n_feat), "sum_sq": np.zeros(n_feat),
-            "min": np.full(n_feat, np.inf), "max": np.full(n_feat, -np.inf),
-            "dst_ports": set(), "protocols": set(), "high_port_count": 0,
-        })
+        acc = accumulators.setdefault(
+            wkey,
+            {
+                "count": 0,
+                "sum": np.zeros(n_feat),
+                "sum_sq": np.zeros(n_feat),
+                "min": np.full(n_feat, np.inf),
+                "max": np.full(n_feat, -np.inf),
+                "dst_ports": set(),
+                "protocols": set(),
+                "high_port_count": 0,
+            },
+        )
         acc["count"] += n
         acc["sum"] += X.sum(axis=0)
-        acc["sum_sq"] += (X ** 2).sum(axis=0)
+        acc["sum_sq"] += (X**2).sum(axis=0)
         acc["min"] = np.minimum(acc["min"], X.min(axis=0))
         acc["max"] = np.maximum(acc["max"], X.max(axis=0))
         if dst_port_idx is not None:
@@ -264,16 +460,25 @@ def _aggregate_windows(df: pd.DataFrame) -> tuple:
         acc = accumulators[wkey]
         n = acc["count"]
         mean = acc["sum"] / n
-        var = np.maximum((acc["sum_sq"] / n) - (mean ** 2), 0.0)
-        states.append(np.concatenate([
-            mean, np.sqrt(var), acc["min"], acc["max"],
-            np.array([
-                np.log1p(n),
-                np.log1p(len(acc["dst_ports"])),
-                len(acc["protocols"]),
-                acc["high_port_count"] / n if n > 0 else 0.0,
-            ]),
-        ]))
+        var = np.maximum((acc["sum_sq"] / n) - (mean**2), 0.0)
+        states.append(
+            np.concatenate(
+                [
+                    mean,
+                    np.sqrt(var),
+                    acc["min"],
+                    acc["max"],
+                    np.array(
+                        [
+                            np.log1p(n),
+                            np.log1p(len(acc["dst_ports"])),
+                            len(acc["protocols"]),
+                            acc["high_port_count"] / n if n > 0 else 0.0,
+                        ]
+                    ),
+                ]
+            )
+        )
         timestamps.append(wkey)
         counts.append(int(n))
 
@@ -340,12 +545,14 @@ def _k_step_trajectory(pred_state, atk_log, mitre_log, h_c) -> List[Dict]:
     mt_cls = int(mitre_log.argmax(dim=1).item())
     if atk_prob < _best_threshold:
         mt_cls = 0
-        
-    trajectory.append({
-        "step_ahead": _format_horizon(1),
-        "prob": round(float(atk_prob), 4),
-        "stage": MITRE_NAMES.get(mt_cls, "Unknown"),
-    })
+
+    trajectory.append(
+        {
+            "step_ahead": _format_horizon(1),
+            "prob": round(float(atk_prob), 4),
+            "stage": MITRE_NAMES.get(mt_cls, "Unknown"),
+        }
+    )
 
     with torch.no_grad():
         for step in range(1, _k_steps):
@@ -355,21 +562,24 @@ def _k_step_trajectory(pred_state, atk_log, mitre_log, h_c) -> List[Dict]:
             mt_cls = int(mitre_log.argmax(dim=1).item())
             if atk_prob < _best_threshold:
                 mt_cls = 0
-                
-            trajectory.append({
-                "step_ahead": _format_horizon(step + 1),
-                "prob": round(float(atk_prob), 4),
-                "stage": MITRE_NAMES.get(mt_cls, "Unknown"),
-            })
+
+            trajectory.append(
+                {
+                    "step_ahead": _format_horizon(step + 1),
+                    "prob": round(float(atk_prob), 4),
+                    "stage": MITRE_NAMES.get(mt_cls, "Unknown"),
+                }
+            )
     return trajectory
 
 
-def _run_model_inference(states: np.ndarray, timestamps: list, counts: list,
-                          missing_feature_indices: list) -> List[Dict]:
+def _run_model_inference(
+    states: np.ndarray, timestamps: list, counts: list, missing_feature_indices: list
+) -> List[Dict]:
     windows_out = []
 
     for i in range(len(states) - _seq_len):
-        seq = states[i: i + _seq_len]
+        seq = states[i : i + _seq_len]
         seq_sc = _scale_sequence(seq, missing_feature_indices)
         X_t = torch.tensor(seq_sc).unsqueeze(0).to(device)
 
@@ -393,8 +603,12 @@ def _run_model_inference(states: np.ndarray, timestamps: list, counts: list,
                 signed_log1p(true_future).reshape(1, -1)
             )[0]
             true_future_sc = np.clip(true_future_sc, -3.0, 3.0)
-            mse_val = float(np.mean((pred_state.cpu().numpy().flatten() - true_future_sc) ** 2))
-            z = (mse_val - _benign_mse_baseline["mean"]) / (_benign_mse_baseline["std"] + 1e-8)
+            mse_val = float(
+                np.mean((pred_state.cpu().numpy().flatten() - true_future_sc) ** 2)
+            )
+            z = (mse_val - _benign_mse_baseline["mean"]) / (
+                _benign_mse_baseline["std"] + 1e-8
+            )
             calibrated_mse = 1 / (1 + np.exp(-(z - 3.0)))
             current_risk = max(attack_head_prob, calibrated_mse)
 
@@ -408,24 +622,30 @@ def _run_model_inference(states: np.ndarray, timestamps: list, counts: list,
         if current_risk < _best_threshold:
             mitre_cls = 0
 
-        windows_out.append({
-            "step_index": len(windows_out),
-            "timestamp": timestamps[i + _seq_len].strftime("%H:%M:%S"),
-            "flow_count": counts[i + _seq_len],
-            "current_risk": round(float(current_risk), 4),
-            "current_stage": MITRE_NAMES.get(mitre_cls, "Unknown"),
-            "trajectory": trajectory,
-            "shap_features": shap_features,
-            # TEMPORARY diagnostics — remove once current_risk is verified.
-            # Lets you see whether the attack head or the reconstruction-
-            # error term is driving current_risk on a given window.
-            "_debug": {
-                "attack_head_prob": round(float(attack_head_prob), 4),
-                "calibrated_mse": round(float(calibrated_mse), 4) if calibrated_mse is not None else None,
-                "raw_mse": round(mse_val, 6) if mse_val is not None else None,
-                "benign_mse_baseline": _benign_mse_baseline,
-            },
-        })
+        windows_out.append(
+            {
+                "step_index": len(windows_out),
+                "timestamp": timestamps[i + _seq_len].strftime("%H:%M:%S"),
+                "flow_count": counts[i + _seq_len],
+                "current_risk": round(float(current_risk), 4),
+                "current_stage": MITRE_NAMES.get(mitre_cls, "Unknown"),
+                "trajectory": trajectory,
+                "shap_features": shap_features,
+                # TEMPORARY diagnostics — remove once current_risk is verified.
+                # Lets you see whether the attack head or the reconstruction-
+                # error term is driving current_risk on a given window.
+                "_debug": {
+                    "attack_head_prob": round(float(attack_head_prob), 4),
+                    "calibrated_mse": (
+                        round(float(calibrated_mse), 4)
+                        if calibrated_mse is not None
+                        else None
+                    ),
+                    "raw_mse": round(mse_val, 6) if mse_val is not None else None,
+                    "benign_mse_baseline": _benign_mse_baseline,
+                },
+            }
+        )
 
     return windows_out
 
@@ -436,7 +656,7 @@ async def upload_csv(file: UploadFile = File(...)):
         raise HTTPException(
             status_code=503,
             detail="No trained model checkpoint loaded on the server "
-                   "(lstm_world_model.pth missing).",
+            "(lstm_world_model.pth missing).",
         )
 
     content = await file.read()
@@ -455,8 +675,8 @@ async def upload_csv(file: UploadFile = File(...)):
         raise HTTPException(
             status_code=422,
             detail=f"Need at least {_seq_len + 1} one-minute traffic windows "
-                   f"to run inference, only got {len(states)}. Upload a "
-                   f"longer capture.",
+            f"to run inference, only got {len(states)}. Upload a "
+            f"longer capture.",
         )
 
     windows = _run_model_inference(states, timestamps, counts, missing_idx)
@@ -517,4 +737,5 @@ async def upload_csv(file: UploadFile = File(...)):
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)

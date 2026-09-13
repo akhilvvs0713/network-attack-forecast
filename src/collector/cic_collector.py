@@ -98,8 +98,10 @@ class CICCollector:
         cmd = [
             python_bin,
             wrapper_script,
-            "-i", self.interface,
-            "-c", str(output_path),
+            "-i",
+            self.interface,
+            "-c",
+            str(output_path),
         ]
         logger.info("Starting capture → %s", output_path.name)
         logger.debug("Command: %s", " ".join(cmd))
@@ -146,7 +148,9 @@ class CICCollector:
         # Log stderr from the completed process
         if proc.stderr:
             try:
-                stderr_output = proc.stderr.read().decode("utf-8", errors="replace").strip()
+                stderr_output = (
+                    proc.stderr.read().decode("utf-8", errors="replace").strip()
+                )
                 if stderr_output:
                     logger.debug("cicflowmeter stderr: %s", stderr_output)
             except Exception:
@@ -183,7 +187,9 @@ class CICCollector:
     def _seconds_until_next_rotation(self) -> int:
         """Seconds remaining until the next rotation boundary."""
         now = datetime.utcnow()
-        current_slot_minute = (now.minute // self.rotation_minutes) * self.rotation_minutes
+        current_slot_minute = (
+            now.minute // self.rotation_minutes
+        ) * self.rotation_minutes
         next_slot_minute = current_slot_minute + self.rotation_minutes
 
         if next_slot_minute >= 60:
@@ -221,9 +227,7 @@ class CICCollector:
                 f"Create a venv with: python3 -m venv {project_root / '.venv'}"
             )
         if not wrapper.is_file():
-            raise FileNotFoundError(
-                f"CIC wrapper script not found at {wrapper}"
-            )
+            raise FileNotFoundError(f"CIC wrapper script not found at {wrapper}")
 
         return str(venv_python), str(wrapper)
 

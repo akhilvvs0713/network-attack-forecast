@@ -6,11 +6,13 @@ root_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(root_dir))
 sys.path.insert(0, str(root_dir / "backend"))
 
+
 def test_backend_imports():
     """Verify backend modules can be imported."""
     import backend.main
     import backend.model
-    
+
+
 def test_src_imports():
     """Verify src modules can be imported."""
     import src.collector.cic_wrapper

@@ -30,3 +30,19 @@ pre,
 .font-sans * {
   font-family: 'Space Grotesk', sans-serif !important;
 }
+
+/* Custom Scrollbar for Dark Theme */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: #070b0a;
+}
+::-webkit-scrollbar-thumb {
+  background: #1c2d27;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #065f46;
+}

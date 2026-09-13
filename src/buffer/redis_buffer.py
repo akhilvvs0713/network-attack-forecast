@@ -12,15 +12,16 @@ from config import config
 
 logger = logging.getLogger("NetworkMonitor.RedisBuffer")
 
+
 class RedisFlowBuffer:
     """
     Rolling buffer for network flows using Redis Sorted Sets.
-    
+
     Acts as short-lived working memory for the most recent traffic
     (default 5 minutes), allowing older flows to drop off as new
     traffic arrives.
     """
-    
+
     def __init__(
         self,
         host: str = config.REDIS_HOST,
@@ -34,7 +35,7 @@ class RedisFlowBuffer:
         self.db = db
         self.key = key
         self.retention_seconds = retention_seconds
-        
+
         # Connect to Redis
         self.client = redis.Redis(
             host=self.host,
@@ -58,7 +59,7 @@ class RedisFlowBuffer:
         """
         if not ts_val:
             return time.time()
-            
+
         try:
             # If it's already a float or int
             return float(ts_val)
@@ -66,6 +67,7 @@ class RedisFlowBuffer:
             pass
 
         import re
+
         ts_str = str(ts_val).strip()
         try:
             # ISO-like format: YYYY-MM-DD...
@@ -78,10 +80,12 @@ class RedisFlowBuffer:
                 dt = date_parser.parse(ts_str)
             return dt.timestamp()
         except Exception as e:
-            logger.debug(f"Failed to parse timestamp '{ts_val}', falling back to current time: {e}")
+            logger.debug(
+                f"Failed to parse timestamp '{ts_val}', falling back to current time: {e}"
+            )
             return time.time()
 
-    def add_flow(self, flow: Dict[str, Any], timestamp: Optional[float] = None) -> None:
+    def add_flow(self, flow: Dict[str, Any], timestamp: Optional[float] = None, event_id: Optional[str] = None) -> None:
         """
         Add a flow to the rolling buffer and automatically prune old entries.
         """
@@ -90,27 +94,33 @@ class RedisFlowBuffer:
 
         # Inject a unique ID so identical flows aren't overwritten in the Sorted Set
         flow_record = flow.copy()
-        if "_id" not in flow_record:
+        if event_id:
+            flow_record["_id"] = event_id
+        elif "_id" not in flow_record:
             flow_record["_id"] = str(uuid.uuid4())
 
         try:
             serialized = json.dumps(flow_record)
             # zadd expects mapping {member: score}
             self.client.zadd(self.key, {serialized: timestamp})
-            
+
             # Prune old traffic automatically based on the newly inserted timestamp
             self.prune(current_timestamp=timestamp)
         except redis.RedisError as e:
             logger.error(f"Failed to add flow to Redis: {e}")
 
-    def get_flows(self, start_timestamp: Optional[float] = None, end_timestamp: Optional[float] = None) -> List[Dict[str, Any]]:
+    def get_flows(
+        self,
+        start_timestamp: Optional[float] = None,
+        end_timestamp: Optional[float] = None,
+    ) -> List[Dict[str, Any]]:
         """
         Retrieve flows within the specified time range.
         If no range is provided, returns all flows currently in the buffer (the rolling window).
         """
         min_score = start_timestamp if start_timestamp is not None else "-inf"
         max_score = end_timestamp if end_timestamp is not None else "+inf"
-        
+
         try:
             records = self.client.zrangebyscore(self.key, min_score, max_score)
             return [json.loads(record) for record in records]
@@ -125,13 +135,13 @@ class RedisFlowBuffer:
         """
         if current_timestamp is None:
             current_timestamp = time.time()
-            
+
         cutoff = current_timestamp - self.retention_seconds
-        
+
         try:
             # ZREMRANGEBYSCORE is inclusive by default for min/max.
             # To exclude the exact cutoff boundary we could use '({cutoff}'
-            # but usually inclusive is fine for pruning. We will use strictly less than 
+            # but usually inclusive is fine for pruning. We will use strictly less than
             # to be safe and match the strict boundary semantic: (-inf, cutoff)
             cutoff_str = f"({cutoff}"
             removed = self.client.zremrangebyscore(self.key, "-inf", cutoff_str)

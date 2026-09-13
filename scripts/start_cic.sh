@@ -58,7 +58,7 @@ echo ""
 
 # Generate the first output filename
 generate_filename() {
-    date -u +"flows_%Y-%m-%d_%H-%M.csv"
+    date +"flows_%Y-%m-%d_%H-%M.csv"
 }
 
 CAPTURE_PID=""
@@ -93,7 +93,7 @@ echo ""
 
 while true; do
     OUTFILE="$CIC_FLOW_DIR/$(generate_filename)"
-    echo "[$(date -u +%H:%M:%S)] Capturing → $OUTFILE"
+    echo "[$(date +%H:%M:%S)] Capturing → $OUTFILE"
 
     "$VENV_PYTHON" "$CIC_WRAPPER" -i "$INTERFACE" -c "$OUTFILE" &
     CAPTURE_PID=$!

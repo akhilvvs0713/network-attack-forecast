@@ -59,6 +59,7 @@ class TripleWriter:
             logger.error("Redis Stream write failed: %s", e)
 
 def main():
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
     parser = argparse.ArgumentParser(description="CICFlowMeter (bugfix wrapper)")
 
@@ -157,8 +158,13 @@ def main():
 
     def handle_signal(signum, frame):
         nonlocal shutdown_requested
-        shutdown_requested = True
-        sniffer.stop()
+        if not shutdown_requested:
+            shutdown_requested = True
+            if sniffer.running:
+                try:
+                    sniffer.stop()
+                except Exception:
+                    pass
 
     signal.signal(signal.SIGINT, handle_signal)
     signal.signal(signal.SIGTERM, handle_signal)
@@ -168,7 +174,12 @@ def main():
         while sniffer.running and not shutdown_requested:
             time.sleep(0.5)
     except KeyboardInterrupt:
-        sniffer.stop()
+        if not shutdown_requested and sniffer.running:
+            shutdown_requested = True
+            try:
+                sniffer.stop()
+            except Exception:
+                pass
     finally:
         if hasattr(session, "_gc_stop"):
             session._gc_stop.set()

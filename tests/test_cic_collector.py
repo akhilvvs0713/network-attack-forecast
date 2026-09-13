@@ -136,6 +136,7 @@ class TestResolveWrapper:
 
         with patch("src.collector.cic_collector.__file__", str(fake_module)):
             import pytest
+
             with pytest.raises(FileNotFoundError, match="Venv Python not found"):
                 CICCollector._resolve_wrapper()
 
@@ -154,6 +155,7 @@ class TestResolveWrapper:
 
         with patch("src.collector.cic_collector.__file__", str(fake_module)):
             import pytest
+
             with pytest.raises(FileNotFoundError, match="CIC wrapper script not found"):
                 CICCollector._resolve_wrapper()
 
@@ -186,6 +188,7 @@ class TestCreateSnifferKwargRegression:
         """Directly call create_sniffer signature check: fields=None
         should NOT crash (the bug was fields=False reaching .split())."""
         from cicflowmeter.sniffer import create_sniffer
+
         # We can't actually create a sniffer without a real interface,
         # but we can verify the fields guard works with None
         # by checking the code path: if fields is not None → split
@@ -199,6 +202,7 @@ class TestCreateSnifferKwargRegression:
         the exact bug in cicflowmeter 0.5.0's main()."""
         fields = False  # What main() incorrectly passes
         import pytest
+
         with pytest.raises(AttributeError, match="split"):
             if fields is not None:  # False is not None!
                 fields.split(",")  # BOOM
