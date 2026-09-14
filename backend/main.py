@@ -106,60 +106,28 @@ async def redis_stream_consumer():
     import pandas as pd
     import asyncio
     from config.config import NETWORK_INTERFACE
-    
+
     r = aioredis.Redis(host="127.0.0.1", port=6379, db=0, decode_responses=True)
-    
+
     # 1. Establish precise Redis Stream startup boundary
     last_id = "$"
     recent_flows = []
-    
+
     try:
-        # Fetch the most recent 2000 flows to find recent history
-        recent_raw = await r.xrevrange("cic:flows:stream", max="+", min="-", count=2000)
-        if recent_raw:
-            newest_id, newest_fields = recent_raw[0]
-            newest_ts_str = newest_fields.get("timestamp", "")
-            
-            newest_ts = time.time()
-            if newest_ts_str:
-                try:
-                    newest_ts = dateutil.parser.parse(newest_ts_str).timestamp()
-                except Exception:
-                    pass
-            
-            cutoff_ts = newest_ts - 400
-            target_last_id = newest_id
-            
-            valid_recent = []
-            for eid, fields in recent_raw:
-                ts_str = fields.get("timestamp", "")
-                if ts_str:
-                    try:
-                        ts = dateutil.parser.parse(ts_str).timestamp()
-                        if ts >= cutoff_ts:
-                            target_last_id = eid
-                            # Add to recent flows (prepend because we're iterating backwards)
-                            valid_recent.insert(0, dict(fields))
-                        else:
-                            break
-                    except Exception:
-                        pass
-            
-            recent_flows = valid_recent
-            # We set last_id to newest_id so that XREAD catches only genuinely NEW flows
-            # that arrive *after* this startup. The old flows are securely in `recent_flows`.
-            last_id = newest_id
+        # Fetch the very last ID to safely start without processing old data
+        info = await r.xinfo_stream("cic:flows:stream")
+        last_id = info.get("last-generated-id", "$")
     except Exception as e:
         print(f"[Live Inference] Failed to establish stream boundary: {e}")
         last_id = "$"
-    
+
     # Wait for model to load
     while _model is None:
         await asyncio.sleep(1)
-        
+
     print(f"[Live Inference] Starting Redis stream consumer... (last_id={last_id})", flush=True)
-    
-    
+
+
     # Reset live runtime state in scenarios.json upon backend restart
     data = load_data()
     data["live"] = {
@@ -172,14 +140,15 @@ async def redis_stream_consumer():
             "attack_windows_detected": 0,
             "telemetry_status": "WARMING_UP",
             "telemetry_lag_seconds": 0,
+            "warmup_count": 0,
         },
         "windows": []
     }
     save_data(data)
-    
+
     last_inferred_ts = None
 
-    
+
     while True:
         try:
             # Block for up to 2 seconds waiting for new stream entries
@@ -192,10 +161,10 @@ async def redis_stream_consumer():
                         flow = dict(fields)
                         recent_flows.append(flow)
                         new_entries += 1
-                        
+
             if new_entries > 0:
                 print(f"[Live Inference] Received {new_entries} new flows. last_id={last_id}", flush=True)
-                
+
             max_ts = 0.0
             for f in recent_flows:
                 ts_str = f.get("timestamp", "")
@@ -206,14 +175,14 @@ async def redis_stream_consumer():
                             max_ts = ts
                     except Exception:
                         pass
-                        
+
             is_disconnected = False
             if max_ts == 0.0:
                 is_disconnected = True
                 max_ts = time.time()
-                
+
             cutoff = max_ts - 400
-            
+
             valid_flows = []
             for f in recent_flows:
                 ts_str = f.get("timestamp", "")
@@ -224,9 +193,9 @@ async def redis_stream_consumer():
                         valid_flows.append(f)
                 except Exception:
                     pass
-            
+
             recent_flows = valid_flows
-            
+
             # Stale logic
             lag_seconds = time.time() - max_ts
             if is_disconnected:
@@ -249,64 +218,118 @@ async def redis_stream_consumer():
                 },
                 "windows": []
             })
-            
+
             scenario_entry["metadata"]["telemetry_status"] = telemetry_status
             scenario_entry["metadata"]["telemetry_lag_seconds"] = int(lag_seconds)
             # Ensure metadata always reflects correct interface
             scenario_entry["metadata"]["target_asset"] = f"{NETWORK_INTERFACE} (Live Capture)"
-            
+
             if len(recent_flows) > 0:
                 df = pd.DataFrame(recent_flows)
                 try:
                     states, timestamps, counts, missing_idx = _aggregate_windows(df)
-                    if len(states) >= _seq_len + 1:
+
+                    # Enforce Rule 5: A network state is considered complete only after
+                    # its corresponding 1-minute window has closed.
+                    if len(timestamps) > 0:
+                        max_window = timestamps[-1]
+                        complete_idx = [i for i, ts in enumerate(timestamps) if ts < max_window]
+                        if complete_idx:
+                            states = states[complete_idx]
+                            timestamps = [timestamps[i] for i in complete_idx]
+                            counts = [counts[i] for i in complete_idx]
+                        else:
+                            states, timestamps, counts = [], [], []
+
+                    num_complete = len(states)
+                    scenario_entry["metadata"]["warmup_count"] = min(num_complete, _seq_len)
+
+                    if num_complete >= _seq_len:
                         # Prevent duplicate inference
                         latest_window_ts = timestamps[-1]
-                        
+
                         if last_inferred_ts == latest_window_ts:
                             # We have already inferred this exact minute, skip!
                             pass
                         else:
                             # Wrap synchronous inference in thread
                             windows = await asyncio.to_thread(
-                                _run_model_inference, states, timestamps, counts, missing_idx
+                                _run_model_inference, states, timestamps, counts, missing_idx, True
                             )
                             if windows:
                                 last_inferred_ts = latest_window_ts
-                                
+
                                 # Merge historical live windows
                                 existing_windows = scenario_entry.get("windows", [])
                                 existing_dict = {w["timestamp"]: w for w in existing_windows}
                                 for w in windows:
                                     existing_dict[w["timestamp"]] = w
-                                
+
                                 merged_windows = list(existing_dict.values())
                                 merged_windows.sort(key=lambda x: x["timestamp"])
-                                
+
                                 # Bound backend prediction history to 60 windows
                                 merged_windows = merged_windows[-60:]
-                                
+
                                 # Reassign step_index sequentially
                                 for idx, w in enumerate(merged_windows):
                                     w["step_index"] = idx
-                                    
-                                n_attack = sum(1 for w in merged_windows if w["current_risk"] >= _best_threshold)
+
+                                n_attack = sum(1 for w in merged_windows if w.get("current_risk") is not None and w["current_risk"] >= _best_threshold)
                                 scenario_entry["metadata"]["total_windows"] = len(merged_windows)
                                 scenario_entry["metadata"]["detected_features"] = list(df.columns)[:8]
                                 scenario_entry["metadata"]["rows_ingested"] = len(recent_flows)
                                 scenario_entry["metadata"]["attack_windows_detected"] = n_attack
                                 scenario_entry["windows"] = merged_windows
-                                
+
                                 print(f"[Live Inference] Inferred windows. Total history: {len(merged_windows)}", flush=True)
                     else:
                         if new_entries > 0:
-                            print(f"[Live Inference] Warming up... (States: {len(states)}/{_seq_len + 1})", flush=True)
+                            print(f"[Live Inference] Warming up... (States: {num_complete}/{_seq_len})", flush=True)
                         if telemetry_status == "LIVE":
                             scenario_entry["metadata"]["telemetry_status"] = "WARMING_UP"
+
+                        # Expose the completed warmup windows to the frontend without inference data
+                        warmup_windows = []
+                        for i in range(num_complete):
+                            warmup_windows.append({
+                                "step_index": i,
+                                "timestamp": timestamps[i].strftime("%H:%M:%S"),
+                                "flow_count": int(counts[i]),
+                                "current_risk": None,
+                                "current_stage": "Collecting Context...",
+                                "trajectory": [],
+                                "shap_features": [],
+                                "is_warmup": True
+                            })
+
+                        scenario_entry["windows"] = warmup_windows
+                        scenario_entry["metadata"]["total_windows"] = len(warmup_windows)
+                        scenario_entry["metadata"]["detected_features"] = list(df.columns)[:8]
+                        scenario_entry["metadata"]["rows_ingested"] = len(recent_flows)
+
+                    # ADD TEMPORARY STRUCTURED DEBUG LOGGING HERE
+                    last_event_id = last_id
+                    current_bucket_str = pd.to_datetime(max_ts, unit='s').floor('1min').strftime('%H:%M:%S')
+                    cw = scenario_entry.get("windows", [])
+                    cw_latest = cw[-1] if len(cw) > 0 else None
+                    print("\n[DEBUG LOG]")
+                    print(f"  session_id: live")
+                    print(f"  telemetry timestamp: {pd.to_datetime(max_ts, unit='s').strftime('%H:%M:%S')}")
+                    print(f"  flow/event ID if available: {last_event_id}")
+                    print(f"  current minute bucket: {current_bucket_str}")
+                    print(f"  number of flows in that minute: {len([f for f in recent_flows if pd.to_datetime(f.get('timestamp')).floor('1min') == pd.to_datetime(max_ts, unit='s').floor('1min')])}")
+                    print(f"  completed window number: {scenario_entry['metadata'].get('total_windows', 0)}")
+                    print(f"  warmup_count: {scenario_entry['metadata'].get('warmup_count', 0)}")
+                    print(f"  current rolling state flow_count: {cw_latest['flow_count'] if cw_latest else 0}")
+                    print(f"  API values returned for flow throughput/live monitor: {cw_latest['flow_count'] if cw_latest else scenario_entry['metadata']['rows_ingested']} / {scenario_entry['metadata'].get('total_windows', 0)}")
+                    print("[/DEBUG LOG]\n", flush=True)
+
                 except Exception as e:
                     print(f"[Live Inference] Error in processing: {e}", flush=True)
+                    import traceback
                     traceback.print_exc()
-            
+
             data[scenario_id] = scenario_entry
             save_data(data)
 
@@ -354,7 +377,7 @@ def get_scenario_step(scenario_id: str, step_idx: int):
         raise HTTPException(status_code=404, detail="Scenario not found")
 
     windows = data[scenario_id]["windows"]
-    
+
     # Safely handle empty live sessions (warming up)
     if len(windows) == 0:
         return {
@@ -362,7 +385,7 @@ def get_scenario_step(scenario_id: str, step_idx: int):
             "current_window": None,
             "total_steps": 0,
         }
-        
+
     if step_idx < 0 or step_idx >= len(windows):
         raise HTTPException(status_code=400, detail="Step out of range")
 
@@ -574,11 +597,16 @@ def _k_step_trajectory(pred_state, atk_log, mitre_log, h_c) -> List[Dict]:
 
 
 def _run_model_inference(
-    states: np.ndarray, timestamps: list, counts: list, missing_feature_indices: list
+    states: np.ndarray, timestamps: list, counts: list, missing_feature_indices: list,
+    is_live: bool = False
 ) -> List[Dict]:
     windows_out = []
 
-    for i in range(len(states) - _seq_len):
+    max_i = len(states) - _seq_len
+    if is_live:
+        max_i = len(states) - _seq_len + 1
+
+    for i in range(max_i):
         seq = states[i : i + _seq_len]
         seq_sc = _scale_sequence(seq, missing_feature_indices)
         X_t = torch.tensor(seq_sc).unsqueeze(0).to(device)
@@ -590,14 +618,13 @@ def _run_model_inference(
         attack_head_prob = torch.sigmoid(atk_log).item()
         mitre_cls = int(mitre_log.argmax(dim=1).item())
 
-        # Hybrid score for the *current* step: attack head + calibrated
-        # reconstruction error, same scheme as notebook Cell 9 test-set
-        # evaluation (we already have the true next-window state, since this
-        # is a completed window within the uploaded file).
         current_risk = attack_head_prob
         calibrated_mse = None
         mse_val = None
-        if _benign_mse_baseline is not None:
+
+        has_true_future = (i + _seq_len < len(states))
+
+        if _benign_mse_baseline is not None and has_true_future:
             true_future = states[i + _seq_len].astype(np.float64)
             true_future_sc = _scaler.transform(
                 signed_log1p(true_future).reshape(1, -1)
@@ -612,28 +639,32 @@ def _run_model_inference(
             calibrated_mse = 1 / (1 + np.exp(-(z - 3.0)))
             current_risk = max(attack_head_prob, calibrated_mse)
 
-        # Forward-looking trajectory (Cell 10 style k-step forecast). This is
-        # a genuine forecast, not graded against ground truth, so it uses the
-        # raw attack-head probability rather than the hybrid score. Reuses
-        # the pred_state/atk_log/mitre_log/hidden-state already computed
-        # above instead of re-running the forward pass.
+        # Forward-looking trajectory (Cell 10 style k-step forecast).
         trajectory = _k_step_trajectory(pred_state, atk_log, mitre_log, hc)
 
         if current_risk < _best_threshold:
             mitre_cls = 0
 
+        if has_true_future:
+            ts_str = timestamps[i + _seq_len].strftime("%H:%M:%S")
+            fl_count = counts[i + _seq_len]
+        else:
+            # We are predicting the future window
+            last_ts = timestamps[i + _seq_len - 1]
+            next_ts = last_ts + pd.Timedelta(_window_size)
+            ts_str = next_ts.strftime("%H:%M:%S")
+            fl_count = 0
+
         windows_out.append(
             {
                 "step_index": len(windows_out),
-                "timestamp": timestamps[i + _seq_len].strftime("%H:%M:%S"),
-                "flow_count": counts[i + _seq_len],
+                "timestamp": ts_str,
+                "flow_count": fl_count,
                 "current_risk": round(float(current_risk), 4),
                 "current_stage": MITRE_NAMES.get(mitre_cls, "Unknown"),
                 "trajectory": trajectory,
                 "shap_features": shap_features,
                 # TEMPORARY diagnostics — remove once current_risk is verified.
-                # Lets you see whether the attack head or the reconstruction-
-                # error term is driving current_risk on a given window.
                 "_debug": {
                     "attack_head_prob": round(float(attack_head_prob), 4),
                     "calibrated_mse": (

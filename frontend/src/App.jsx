@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Component } from 'react';
 import {
   ShieldCheck,
   Activity,
@@ -83,6 +83,44 @@ const THREAT_VECTORS = [
   { id: "VEC-2", name: "SMB Named Pipe Injection", actor: "Lateral Movement", target: "10.0.0.5:445", severity: "HIGH", prob: "86%", recommendation: "Enforce SMB packet signing & block RPC inter-VLAN" },
   { id: "VEC-3", name: "Stealth SYN Port Sweep", actor: "Reconnaissance", target: "Class C Subnet", severity: "MEDIUM", prob: "64%", recommendation: "Deploy dynamic rate-limiting on gateway edge" }
 ];
+
+class ErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error, errorInfo) {
+    console.error("ErrorBoundary caught an error", error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="p-6 rounded-2xl bg-red-950/40 border border-red-800/50 backdrop-blur-2xl shadow-xl m-4">
+          <h2 className="text-lg font-semibold text-red-400 mb-2 flex items-center">
+            <AlertTriangle className="w-5 h-5 mr-2" />
+            Rendering Error in this View
+          </h2>
+          <p className="text-sm text-red-300 font-mono">
+            {this.state.error?.toString()}
+          </p>
+          <button
+            className="mt-4 px-4 py-2 bg-red-900/50 hover:bg-red-800/50 text-red-200 text-sm font-semibold rounded-lg transition"
+            onClick={() => this.setState({ hasError: false })}
+          >
+            Try Again
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('World Model');
@@ -278,7 +316,8 @@ export default function App() {
         timestamp: w.timestamp,
         attack_prob: w.current_risk,
         is_attack: w.current_risk >= 0.5,
-        status_label: w.current_stage
+        status_label: w.current_stage,
+        is_warmup: w.is_warmup || false
       }));
     } else {
       tableData = []; // Triggers "Waiting for live telemetry..."
@@ -430,15 +469,15 @@ export default function App() {
           </div>
 
           <div className="flex items-center space-x-6 text-xs">
-            {isLiveTracking && (!currentWindow || data.total_steps === 0) ? (
+            {isLiveTracking && (!currentWindow || currentWindow.is_warmup || data.total_steps === 0) ? (
               <div className="flex items-center space-x-1.5 px-3 py-1 rounded-full bg-amber-950/60 border border-amber-800/40 text-amber-300 text-[11px] font-mono font-medium backdrop-blur-md">
                 <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>
-                <span>{data.metadata?.telemetry_status === 'WARMING_UP' ? 'WARMING UP (COLLECTING CONTEXT)' : 'WAITING FOR TELEMETRY'}</span>
+                <span>{data.metadata?.telemetry_status === 'WARMING_UP' ? `WARMING UP (${data.metadata?.warmup_count || 0}/5)` : 'WAITING FOR TELEMETRY'}</span>
               </div>
             ) : (
               <div className="flex items-center space-x-1.5 px-3 py-1 rounded-full bg-emerald-950/60 border border-emerald-800/40 text-emerald-300 text-[11px] font-mono font-medium backdrop-blur-md">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
-                <span>SYNCHRONIZED ({data.total_steps} WINDOWS)</span>
+                <span>LIVE INFERENCE ACTIVE</span>
               </div>
             )}
             <div className="text-slate-500 font-sans">TELEMETRY TIME: <span className="text-slate-300 font-mono ml-1">{currentWindow?.timestamp ? `${currentWindow.timestamp} IST` : '--'}</span></div>
@@ -455,7 +494,7 @@ export default function App() {
         </header>
 
         <div className="p-8 space-y-6">
-
+          <ErrorBoundary>
           {/* VIEW: WORLD MODEL */}
           {activeTab === 'World Model' && (
             <>
@@ -470,7 +509,7 @@ export default function App() {
                 <div className="bg-white/[0.03] border border-white/10 p-4 rounded-2xl backdrop-blur-2xl shadow-xl">
                   <div className="text-[11px] font-sans font-medium text-slate-400 tracking-wider">CAUSAL DIVERGENCE</div>
                   <div className="text-xl font-semibold font-sans text-amber-300 mt-2">
-                    {!currentWindow ? (data.metadata?.telemetry_status === 'WARMING_UP' ? "Collecting Context" : "Awaiting Data") : currentRisk > 0.6 ? "Critical Anomaly" : currentRisk > 0.3 ? "Elevated Drift" : "Nominal Physics"}
+                    {!currentWindow || currentWindow.is_warmup ? (data.metadata?.telemetry_status === 'WARMING_UP' ? "Collecting Context" : "Awaiting Data") : currentRisk > 0.6 ? "Critical Anomaly" : currentRisk > 0.3 ? "Elevated Drift" : "Nominal Physics"}
                   </div>
                   <div className="text-[11px] text-amber-400/80 font-sans mt-1">Latent State Transition</div>
                 </div>
@@ -486,7 +525,7 @@ export default function App() {
                 <div className="bg-white/[0.03] border border-white/10 p-4 rounded-2xl backdrop-blur-2xl shadow-xl">
                   <div className="text-[11px] font-sans font-medium text-slate-400 tracking-wider">ATTACK PROBABILITY</div>
                   <div className="text-3xl font-semibold font-mono text-[#e59866] mt-1">
-                    {(currentRisk * 100).toFixed(1)}%
+                    {!currentWindow || currentWindow.is_warmup ? "---%" : `${(currentRisk * 100).toFixed(1)}%`}
                   </div>
                   <div className="text-[11px] text-slate-400 font-sans mt-1">Horizon k=5 Rollout</div>
                 </div>
@@ -552,12 +591,12 @@ export default function App() {
               </div>
 
               {/* Trajectory Plot + SHAP */}
-              {!currentWindow ? (
+              {!currentWindow || currentWindow.is_warmup ? (
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                   <div className="lg:col-span-2 bg-white/[0.03] border border-white/10 p-8 rounded-2xl backdrop-blur-2xl shadow-xl flex flex-col items-center justify-center min-h-[260px] text-center font-mono">
                     <Activity className="animate-spin w-6 h-6 text-emerald-400 mb-3" />
                     <div className="text-emerald-400 text-sm font-semibold mb-1">
-                      {data.metadata?.telemetry_status === 'WARMING_UP' ? 'WARMING UP (COLLECTING 5-STATE CONTEXT)' : 'WAITING FOR LIVE TELEMETRY'}
+                      {data.metadata?.telemetry_status === 'WARMING_UP' ? `WARMING UP (${data.metadata?.warmup_count || 0}/5)` : 'WAITING FOR LIVE TELEMETRY'}
                     </div>
                     <p className="text-slate-400 text-xs font-sans max-w-md">
                       The PyTorch LSTM World Model requires 5 completed 1-minute historical windows before generating forward simulation trajectories (+1min to +5min).
@@ -740,14 +779,27 @@ export default function App() {
                       tableData.map((row, idx) => (
                         <tr key={idx} className="hover:bg-white/[0.03] transition">
                           <td className="py-2.5 px-3 text-slate-300">{row.timestamp} IST</td>
-                          <td className="py-2.5 px-3 text-amber-300 font-semibold">{row.attack_prob.toFixed(4)}</td>
-                          <td className="py-2.5 px-3">
-                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${row.is_attack ? 'bg-red-950/80 text-red-300 border border-red-800' : 'bg-emerald-950/80 text-emerald-300 border border-emerald-800'}`}>
-                              {row.is_attack ? "True" : "False"}
-                            </span>
+                          <td className="py-2.5 px-3 text-amber-300 font-semibold">
+                            {row.attack_prob != null ? row.attack_prob.toFixed(4) : "---"}
                           </td>
                           <td className="py-2.5 px-3">
-                            {row.is_attack ? (
+                            {row.is_warmup ? (
+                              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-900 text-slate-400 border border-slate-800">
+                                N/A
+                              </span>
+                            ) : (
+                              <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${row.is_attack ? 'bg-red-950/80 text-red-300 border border-red-800' : 'bg-emerald-950/80 text-emerald-300 border border-emerald-800'}`}>
+                                {row.is_attack ? "True" : "False"}
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-2.5 px-3">
+                            {row.is_warmup ? (
+                              <span className="text-slate-400 flex items-center space-x-1">
+                                <Activity className="w-3 h-3 inline mr-1 animate-pulse" />
+                                {row.status_label}
+                              </span>
+                            ) : row.is_attack ? (
                               <span className="text-red-400 font-semibold flex items-center space-x-1">
                                 <AlertTriangle className="w-3 h-3 inline mr-1" />
                                 {row.status_label}
@@ -998,7 +1050,7 @@ export default function App() {
               </div>
             </div>
           )}
-
+          </ErrorBoundary>
         </div>
       </main>
     </div>
