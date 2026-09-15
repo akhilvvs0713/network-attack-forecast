@@ -165,23 +165,23 @@ async def redis_stream_consumer():
             if new_entries > 0:
                 print(f"[Live Inference] Received {new_entries} new flows. last_id={last_id}", flush=True)
 
-            max_ts = 0.0
+            max_dt = pd.NaT
             for f in recent_flows:
                 ts_str = f.get("timestamp", "")
                 if ts_str:
                     try:
-                        ts = dateutil.parser.parse(ts_str).timestamp()
-                        if ts > max_ts:
-                            max_ts = ts
+                        dt = pd.to_datetime(ts_str)
+                        if pd.isna(max_dt) or dt > max_dt:
+                            max_dt = dt
                     except Exception:
                         pass
 
             is_disconnected = False
-            if max_ts == 0.0:
+            if pd.isna(max_dt):
                 is_disconnected = True
-                max_ts = time.time()
+                max_dt = pd.Timestamp.now()
 
-            cutoff = max_ts - 400
+            cutoff = max_dt - pd.Timedelta(seconds=400)
 
             valid_flows = []
             for f in recent_flows:
@@ -189,7 +189,7 @@ async def redis_stream_consumer():
                 if not ts_str:
                     continue
                 try:
-                    if dateutil.parser.parse(ts_str).timestamp() > cutoff:
+                    if pd.to_datetime(ts_str) > cutoff:
                         valid_flows.append(f)
                 except Exception:
                     pass
@@ -197,7 +197,8 @@ async def redis_stream_consumer():
             recent_flows = valid_flows
 
             # Stale logic
-            lag_seconds = time.time() - max_ts
+            now_dt = pd.Timestamp.now()
+            lag_seconds = (now_dt - max_dt).total_seconds()
             if is_disconnected:
                 telemetry_status = "DISCONNECTED"
             elif lag_seconds > 120:
@@ -310,15 +311,15 @@ async def redis_stream_consumer():
 
                     # ADD TEMPORARY STRUCTURED DEBUG LOGGING HERE
                     last_event_id = last_id
-                    current_bucket_str = pd.to_datetime(max_ts, unit='s').floor('1min').strftime('%H:%M:%S')
+                    current_bucket_str = max_dt.floor('1min').strftime('%H:%M:%S')
                     cw = scenario_entry.get("windows", [])
                     cw_latest = cw[-1] if len(cw) > 0 else None
                     print("\n[DEBUG LOG]")
                     print(f"  session_id: live")
-                    print(f"  telemetry timestamp: {pd.to_datetime(max_ts, unit='s').strftime('%H:%M:%S')}")
+                    print(f"  telemetry timestamp: {max_dt.strftime('%H:%M:%S')}")
                     print(f"  flow/event ID if available: {last_event_id}")
                     print(f"  current minute bucket: {current_bucket_str}")
-                    print(f"  number of flows in that minute: {len([f for f in recent_flows if pd.to_datetime(f.get('timestamp')).floor('1min') == pd.to_datetime(max_ts, unit='s').floor('1min')])}")
+                    print(f"  number of flows in that minute: {len([f for f in recent_flows if pd.to_datetime(f.get('timestamp')).floor('1min') == max_dt.floor('1min')])}")
                     print(f"  completed window number: {scenario_entry['metadata'].get('total_windows', 0)}")
                     print(f"  warmup_count: {scenario_entry['metadata'].get('warmup_count', 0)}")
                     print(f"  current rolling state flow_count: {cw_latest['flow_count'] if cw_latest else 0}")
@@ -769,4 +770,4 @@ async def upload_csv(file: UploadFile = File(...)):
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+    uvicorn.run("backend.main:app", host="127.0.0.1", port=8000, reload=True)

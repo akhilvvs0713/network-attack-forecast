@@ -195,24 +195,29 @@ export default function App() {
             
             if (d0.total_steps && d0.total_steps > 0) {
               const totalSteps = d0.total_steps;
-              setStep(totalSteps - 1); // update step counter for UI
               
               // 1. Fetch latest data for World Model
               let dLatest = null;
               const resLatest = await fetch(`http://127.0.0.1:8000/api/scenario/live/step/${totalSteps - 1}`);
               if (resLatest.ok) {
                  dLatest = await resLatest.json();
-                 setData(dLatest);
               }
+
+              // DIAGNOSTIC LOGGING
+              console.log(`[Diagnostic] Endpoint requested: /api/scenario/live/step/${totalSteps - 1}`);
+              console.log(`[Diagnostic] warmup_count: ${dLatest?.metadata?.warmup_count}`);
+              console.log(`[Diagnostic] total_windows: ${dLatest?.metadata?.total_windows}`);
+              console.log(`[Diagnostic] current_window timestamp: ${dLatest?.current_window?.timestamp}`);
+              console.log(`[Diagnostic] inference_active/live status: ${dLatest?.metadata?.telemetry_status}`);
+              console.log(`[Diagnostic] number of windows returned: total_steps=${totalSteps}`);
               
               // 2. Reconstruct Live Monitor History
               setLiveDetectionLog(prev => {
-                const existingIndices = new Set(prev.map(w => w.step_index));
                 const missingIndices = [];
                 for (let i = 0; i < totalSteps; i++) {
-                  if (!existingIndices.has(i) && !(dLatest && i === totalSteps - 1)) {
-                     missingIndices.push(i);
-                  }
+                  // We can't use step_index to check existence because backend resets it to 0-4
+                  // We just fetch all windows and merge by timestamp.
+                  missingIndices.push(i);
                 }
                 
                 if (missingIndices.length > 0) {
@@ -225,7 +230,18 @@ export default function App() {
                        if (dLatest && dLatest.current_window) combined.push(dLatest.current_window);
                        const unique = new Map();
                        combined.forEach(w => unique.set(w.timestamp, w));
-                       return Array.from(unique.values()).sort((a, b) => a.step_index - b.step_index).slice(-16);
+                       const sortedLog = Array.from(unique.values()).sort((a, b) => a.timestamp.localeCompare(b.timestamp)).slice(-16);
+                       
+                       // UPDATE WORLD MODEL STATE WITH TRUE CHRONOLOGICAL DATA
+                       setData(prevData => ({
+                         ...(prevData || dLatest),
+                         metadata: dLatest.metadata,
+                         current_window: sortedLog[sortedLog.length - 1],
+                         total_steps: sortedLog.length
+                       }));
+                       setStep(sortedLog.length - 1);
+                       
+                       return sortedLog;
                      });
                    }).catch(err => console.error("History fetch error:", err));
                    return prev; // return previous state while async fetch completes
@@ -236,7 +252,17 @@ export default function App() {
                 const combined = [...prev, dLatest.current_window];
                 const unique = new Map();
                 combined.forEach(w => unique.set(w.timestamp, w));
-                return Array.from(unique.values()).sort((a, b) => a.step_index - b.step_index).slice(-16);
+                const sortedLog = Array.from(unique.values()).sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+                
+                setData(prevData => ({
+                   ...(prevData || dLatest),
+                   metadata: dLatest.metadata,
+                   current_window: sortedLog[sortedLog.length - 1],
+                   total_steps: sortedLog.length
+                }));
+                setStep(sortedLog.length - 1);
+                
+                return sortedLog;
               });
             } else {
               setData(d0); // Pass metadata through but current_window is null
