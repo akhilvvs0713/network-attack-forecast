@@ -49,6 +49,8 @@ _k_steps: int = 5
 _window_size: str = "1min"
 _agg_names: List[str] = []
 
+_live_state: Dict = {}
+_uploaded_scenarios: Dict = {}
 
 def _load_checkpoint():
     global _checkpoint, _model, _scaler, _feature_cols, _seq_len
@@ -128,9 +130,9 @@ async def redis_stream_consumer():
     print(f"[Live Inference] Starting Redis stream consumer... (last_id={last_id})", flush=True)
 
 
-    # Reset live runtime state in scenarios.json upon backend restart
-    data = load_data()
-    data["live"] = {
+    # Reset in-memory live runtime state upon backend restart
+    global _live_state
+    _live_state = {
         "metadata": {
             "name": "Live Telemetry",
             "target_asset": f"{NETWORK_INTERFACE} (Live Capture)",
@@ -144,7 +146,6 @@ async def redis_stream_consumer():
         },
         "windows": []
     }
-    save_data(data)
 
     last_inferred_ts = None
 
@@ -206,19 +207,7 @@ async def redis_stream_consumer():
             else:
                 telemetry_status = "LIVE"
 
-            data = load_data()
-            scenario_id = "live"
-            scenario_entry = data.get(scenario_id, {
-                "metadata": {
-                    "name": "Live Telemetry",
-                    "target_asset": f"{NETWORK_INTERFACE} (Live Capture)",
-                    "total_windows": 0,
-                    "detected_features": [],
-                    "rows_ingested": 0,
-                    "attack_windows_detected": 0,
-                },
-                "windows": []
-            })
+            scenario_entry = _live_state
 
             scenario_entry["metadata"]["telemetry_status"] = telemetry_status
             scenario_entry["metadata"]["telemetry_lag_seconds"] = int(lag_seconds)
@@ -331,8 +320,7 @@ async def redis_stream_consumer():
                     import traceback
                     traceback.print_exc()
 
-            data[scenario_id] = scenario_entry
-            save_data(data)
+            # _live_state is updated in-place via scenario_entry. No disk save needed.
 
         except Exception as e:
             print(f"[Live Inference] Critical consumer error: {e}", flush=True)
@@ -346,16 +334,18 @@ async def startup_event():
     global _consumer_task
     _consumer_task = asyncio.create_task(redis_stream_consumer())
 
-def load_data() -> Dict:
+def _load_static_scenarios() -> Dict:
     if not SCENARIOS_PATH.exists():
         return {}
     with open(SCENARIOS_PATH, "r") as f:
         return json.load(f)
 
-
-def save_data(data: Dict) -> None:
-    with open(SCENARIOS_PATH, "w") as f:
-        json.dump(data, f)
+def load_data() -> Dict:
+    data = _load_static_scenarios()
+    data.update(_uploaded_scenarios)
+    if _live_state:
+        data["live"] = _live_state
+    return data
 
 
 @app.get("/api/scenarios")
@@ -753,9 +743,8 @@ async def upload_csv(file: UploadFile = File(...)):
 
     # Persist so the frontend can page through it via the normal
     # /api/scenario/{id}/step/{idx} endpoint, same as the static scenarios.
-    data = load_data()
-    data[scenario_id] = scenario_entry
-    save_data(data)
+    global _uploaded_scenarios
+    _uploaded_scenarios[scenario_id] = scenario_entry
 
     return {
         "status": "success",
