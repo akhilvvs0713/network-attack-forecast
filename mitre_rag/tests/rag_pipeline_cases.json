@@ -1,0 +1,56 @@
+[
+  {
+    "name": "Lateral Movement - SMB",
+    "lstm_output": {
+      "risk_score": 0.91,
+      "predicted_category": "Lateral Movement (TA0008)",
+      "behavior": "Repeated connections between internal Windows hosts using SMB-like traffic."
+    },
+    "expected": ["T1021.002"]
+  },
+  {
+    "name": "DoS Impact",
+    "lstm_output": {
+      "risk_score": 0.94,
+      "predicted_category": "DoS Impact (TA0040)",
+      "behavior": "Large volume of network traffic flooding a target and causing service disruption."
+    },
+    "expected": ["T1498", "T1498.001"]
+  },
+  {
+    "name": "DDoS Impact",
+    "lstm_output": {
+      "risk_score": 0.96,
+      "predicted_category": "DDoS Impact (TA0040)",
+      "behavior": "Multiple sources simultaneously flood a target with network traffic."
+    },
+    "expected": ["T1498", "T1498.001"]
+  },
+  {
+    "name": "Web Exploit",
+    "lstm_output": {
+      "risk_score": 0.89,
+      "predicted_category": "Web Exploit (TA0001)",
+      "behavior": "An attacker sends malicious HTTP requests to exploit a vulnerable web application."
+    },
+    "expected": ["T1190"]
+  },
+  {
+    "name": "Credential Access",
+    "lstm_output": {
+      "risk_score": 0.92,
+      "predicted_category": "Credential Access (TA0006)",
+      "behavior": "An attacker attempts to obtain passwords and credential hashes from a compromised Windows system."
+    },
+    "expected": ["T1003"]
+  },
+  {
+    "name": "Command and Control",
+    "lstm_output": {
+      "risk_score": 0.90,
+      "predicted_category": "C2 / Botnet (TA0011)",
+      "behavior": "A compromised host periodically communicates with a remote server using HTTP or HTTPS."
+    },
+    "expected": ["T1071.001"]
+  }
+]

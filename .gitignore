@@ -46,3 +46,4 @@ pnpm-debug.log*
 *.pid
 *.log
 fabricated_attacks.csv
+mitre_rag/data/attack-stix-data/

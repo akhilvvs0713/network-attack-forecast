@@ -1,0 +1,34 @@
+[
+  {
+    "query": "Repeated SMB connections between internal Windows hosts",
+    "expected": ["T1021.002"]
+  },
+  {
+    "query": "Large volume of traffic causing denial of service",
+    "expected": ["T1498", "T1498.001"]
+  },
+  {
+    "query": "Dumping passwords and credential hashes from a Windows system",
+    "expected": ["T1003"]
+  },
+  {
+    "query": "Command and control communication using HTTP or HTTPS",
+    "expected": ["T1071.001"]
+  },
+  {
+    "query": "Scanning internal hosts and discovering network services",
+    "expected": ["T1046"]
+  },
+  {
+    "query": "Using remote desktop to move between compromised Windows machines",
+    "expected": ["T1021.001"]
+  },
+  {
+    "query": "Transferring files between compromised systems using Windows administrative shares",
+    "expected": ["T1021.002"]
+  },
+  {
+    "query": "Flooding a target with a large amount of network traffic",
+    "expected": ["T1498.001"]
+  }
+]
