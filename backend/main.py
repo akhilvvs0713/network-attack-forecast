@@ -272,6 +272,16 @@ async def redis_stream_consumer():
                                 scenario_entry["metadata"]["attack_windows_detected"] = n_attack
                                 scenario_entry["windows"] = merged_windows
 
+                                # Trigger blockchain audit asynchronously
+                                import backend.blockchain_adapter as blockchain
+                                for w in windows:
+                                    if w.get("current_risk", 0.0) >= _best_threshold:
+                                        # Ensure event_id exists
+                                        if "event_id" not in w:
+                                            import uuid
+                                            w["event_id"] = str(uuid.uuid4())
+                                        asyncio.create_task(blockchain.log_security_event_async(w))
+
                                 print(f"[Live Inference] Inferred windows. Total history: {len(merged_windows)}", flush=True)
                     else:
                         if new_entries > 0:
@@ -515,9 +525,17 @@ def _format_horizon(k: int) -> str:
 
 
 def _scale_sequence(seq: np.ndarray, missing_feature_indices: list) -> np.ndarray:
+    n_feat = len(_feature_cols)
     seq_s = signed_log1p(seq.astype(np.float64))
     seq_sc = _scaler.transform(seq_s).astype(np.float32)
     seq_sc = np.clip(seq_sc, -3.0, 3.0)
+    # Zero out columns for features absent from the uploaded CSV, across
+    # each of the 4 aggregation blocks (mean/std/min/max).
+    for m_idx in missing_feature_indices:
+        for agg_offset in range(4):
+            col_idx = agg_offset * n_feat + m_idx
+            if col_idx < seq_sc.shape[1]:
+                seq_sc[:, col_idx] = 0.0
     return seq_sc
 
 
@@ -610,8 +628,9 @@ def _run_model_inference(
         mitre_cls = int(mitre_log.argmax(dim=1).item())
 
         current_risk = attack_head_prob
-        calibrated_mse = None
+        anomaly_score = None
         mse_val = None
+        z_val = None
 
         has_true_future = (i + _seq_len < len(states))
 
@@ -624,11 +643,11 @@ def _run_model_inference(
             mse_val = float(
                 np.mean((pred_state.cpu().numpy().flatten() - true_future_sc) ** 2)
             )
-            z = (mse_val - _benign_mse_baseline["mean"]) / (
+            z_val = (mse_val - _benign_mse_baseline["mean"]) / (
                 _benign_mse_baseline["std"] + 1e-8
             )
-            calibrated_mse = 1 / (1 + np.exp(-(z - 3.0)))
-            current_risk = max(attack_head_prob, calibrated_mse)
+            anomaly_score = 1 / (1 + np.exp(-(z_val - 3.0)))
+            # Removed current_risk = max(attack_head_prob, anomaly_score)
 
         # Forward-looking trajectory (Cell 10 style k-step forecast).
         trajectory = _k_step_trajectory(pred_state, atk_log, mitre_log, hc)
@@ -652,18 +671,21 @@ def _run_model_inference(
                 "timestamp": ts_str,
                 "flow_count": fl_count,
                 "current_risk": round(float(current_risk), 4),
+                "anomaly_score": round(float(anomaly_score), 4) if anomaly_score is not None else None,
                 "current_stage": MITRE_NAMES.get(mitre_cls, "Unknown"),
                 "trajectory": trajectory,
                 "shap_features": shap_features,
                 # TEMPORARY diagnostics — remove once current_risk is verified.
                 "_debug": {
                     "attack_head_prob": round(float(attack_head_prob), 4),
-                    "calibrated_mse": (
-                        round(float(calibrated_mse), 4)
-                        if calibrated_mse is not None
+                    "raw_mse": round(mse_val, 6) if mse_val is not None else None,
+                    "z": round(float(z_val), 4) if z_val is not None else None,
+                    "anomaly_score": (
+                        round(float(anomaly_score), 4)
+                        if anomaly_score is not None
                         else None
                     ),
-                    "raw_mse": round(mse_val, 6) if mse_val is not None else None,
+                    "current_risk": round(float(current_risk), 4),
                     "benign_mse_baseline": _benign_mse_baseline,
                 },
             }
@@ -755,6 +777,15 @@ async def upload_csv(file: UploadFile = File(...)):
         **scenario_entry,
     }
 
+
+@app.get("/api/audit/verify/{event_id}")
+async def verify_audit_event(event_id: str):
+    import backend.blockchain_adapter as blockchain
+    result = await blockchain.verify_event_async(event_id)
+    if result.get("status") == "NOT_FOUND":
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Event not found off-chain")
+    return result
 
 if __name__ == "__main__":
     import uvicorn
