@@ -31,6 +31,7 @@ import {
   BarChart,
   Bar
 } from 'recharts';
+import { downloadExcelReport, downloadPDFReport } from './reportDownloader';
 
 const SHAP_EXPLANATIONS = {
   "Flow Pkts/s": "Extremely high packet rates indicate volumetric flooding (e.g., DoS/DDoS) intended to exhaust server resources.",
@@ -1001,9 +1002,38 @@ export default function App() {
           {activeTab === 'Reports' && (
             <div className="space-y-6">
               <div className="bg-white/[0.03] border border-white/10 p-6 rounded-2xl backdrop-blur-2xl shadow-xl">
-                <h2 className="text-lg font-semibold text-slate-100 font-sans mb-1">Live Session Ingestion Report</h2>
-                <p className="text-[13px] text-slate-400 font-sans mb-6">Real-time inference statistics for the currently tracked network traffic.</p>
-
+                <div className="flex justify-between items-start mb-6">
+                  <div>
+                    <h2 className="text-lg font-semibold text-slate-100 font-sans mb-1">Live Session Ingestion Report</h2>
+                    <p className="text-[13px] text-slate-400 font-sans">Real-time inference statistics for the currently tracked network traffic.</p>
+                  </div>
+                  <div className="flex space-x-3">
+                    <button 
+                      onClick={() => downloadExcelReport({
+                        totalWindows: uploadedResult?.detection_summary?.total_windows_evaluated || data.total_steps || 0,
+                        anomalousWindows: uploadedResult?.detection_summary?.anomalous_windows_detected || 0,
+                        flowThroughput: currentWindow?.flow_count || 0,
+                        peakRisk: (currentRisk * 100).toFixed(2) + '%',
+                        sessionId: currentScenarioId
+                      })}
+                      className="px-4 py-2 bg-emerald-600/20 text-emerald-400 border border-emerald-500/30 rounded-lg text-xs font-semibold hover:bg-emerald-600/30 transition-colors flex items-center"
+                    >
+                      Export CSV
+                    </button>
+                    <button 
+                      onClick={() => downloadPDFReport({
+                        totalWindows: uploadedResult?.detection_summary?.total_windows_evaluated || data.total_steps || 0,
+                        anomalousWindows: uploadedResult?.detection_summary?.anomalous_windows_detected || 0,
+                        flowThroughput: currentWindow?.flow_count || 0,
+                        peakRisk: (currentRisk * 100).toFixed(2) + '%',
+                        sessionId: currentScenarioId
+                      })}
+                      className="px-4 py-2 bg-emerald-600/20 text-emerald-400 border border-emerald-500/30 rounded-lg text-xs font-semibold hover:bg-emerald-600/30 transition-colors flex items-center"
+                    >
+                      Export PDF
+                    </button>
+                  </div>
+                </div>
                 <div className="overflow-x-auto">
                   <table className="w-full text-left text-xs border-collapse">
                     <thead>
