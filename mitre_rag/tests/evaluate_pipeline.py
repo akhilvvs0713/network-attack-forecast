@@ -57,7 +57,7 @@ def evaluate():
     family_pass = 0
 
     print("\n" + "=" * 80)
-    print("LSTM → RAG PIPELINE EVALUATION")
+    print("LSTM -> RAG PIPELINE EVALUATION")
     print("=" * 80)
 
     for i, case in enumerate(cases, start=1):

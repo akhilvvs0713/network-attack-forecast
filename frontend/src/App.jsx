@@ -18,7 +18,9 @@ import {
   Server,
   PanelLeftClose,
   PanelLeftOpen,
-  Wifi
+  Wifi,
+  ExternalLink,
+  Info
 } from 'lucide-react';
 import {
   LineChart,
@@ -738,6 +740,156 @@ export default function App() {
                   </div>
                 )}
               </div>
+
+              {/* MITRE ATT&CK RAG Grounded Intelligence Card */}
+              {currentWindow && currentWindow.rag && (
+                <div className="bg-white/[0.03] border border-white/10 p-6 rounded-2xl backdrop-blur-2xl shadow-xl space-y-5">
+                  <div className="flex flex-wrap justify-between items-center gap-3 border-b border-white/5 pb-4">
+                    <div className="flex items-center space-x-3">
+                      <div className="p-2.5 rounded-xl bg-cyan-950/60 border border-cyan-800/40 text-cyan-400">
+                        <Crosshair className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <div className="flex items-center space-x-2">
+                          <h2 className="text-[15px] font-semibold text-slate-100 tracking-wide">MITRE ATT&CK Grounded Intelligence</h2>
+                          <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-cyan-950/80 border border-cyan-800/50 text-cyan-300">
+                            RAG PIPELINE
+                          </span>
+                        </div>
+                        <p className="text-[12px] text-slate-400">
+                          Semantic retrieval & evidence grounding across enterprise attack techniques
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center space-x-3">
+                      <div className="flex items-center space-x-2 px-3 py-1.5 rounded-xl bg-white/[0.02] border border-white/10">
+                        <span className="text-[11px] font-sans text-slate-400">CALIBRATED CONFIDENCE:</span>
+                        <span className="text-sm font-mono font-bold text-emerald-400">
+                          {((currentWindow.rag.confidence || 0) * 100).toFixed(0)}%
+                        </span>
+                      </div>
+                      <div className="flex items-center space-x-1.5 px-2.5 py-1 rounded-full bg-emerald-950/50 border border-emerald-800/40 text-emerald-300 text-[11px] font-mono">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                        <span>EVIDENCE GROUNDED</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Primary Technique & Rationale */}
+                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+                    {/* Left 7 cols: Technique ID, Name, Tactic & Reason */}
+                    <div className="lg:col-span-7 space-y-4">
+                      <div className="p-4 rounded-xl bg-white/[0.02] border border-white/5 space-y-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="flex items-center space-x-2.5">
+                            <span className="px-2.5 py-1 rounded-lg bg-emerald-950/80 border border-emerald-500/40 text-emerald-300 font-mono text-xs font-bold tracking-wider">
+                              {currentWindow.rag.technique_id}
+                            </span>
+                            <span className="text-base font-semibold text-slate-100">
+                              {currentWindow.rag.technique_name}
+                            </span>
+                          </div>
+                          <span className="px-2.5 py-1 rounded-md bg-amber-950/60 border border-amber-700/40 text-amber-300 text-xs font-mono font-medium">
+                            {currentWindow.rag.tactic}
+                          </span>
+                        </div>
+
+                        {/* Rationale Quote */}
+                        <div className="p-3 rounded-lg bg-black/30 border border-white/5 text-[13px] text-slate-300 leading-relaxed font-sans">
+                          <span className="text-emerald-400 font-mono font-semibold mr-1.5">HYPOTHESIS:</span>
+                          {currentWindow.rag.reason}
+                        </div>
+
+                        {/* Attribution Telemetry Evidence */}
+                        {currentWindow.rag.evidence && currentWindow.rag.evidence.length > 0 && (
+                          <div>
+                            <div className="text-[11px] font-mono uppercase tracking-wider text-slate-400 mb-2">
+                              Correlated Telemetry Attribution:
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                              {currentWindow.rag.evidence.map((ev, i) => (
+                                <div
+                                  key={i}
+                                  className="flex items-center space-x-2 px-2.5 py-1 rounded-lg bg-white/[0.03] border border-white/10 text-xs font-mono"
+                                >
+                                  <span className="text-slate-200">{ev.feature}</span>
+                                  {ev.importance !== undefined && (
+                                    <span className="text-amber-400 text-[11px]">
+                                      {(ev.importance * 100).toFixed(0)}%
+                                    </span>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Defensive Limitations Alert */}
+                      {currentWindow.rag.limitations && (
+                        <div className="p-3.5 rounded-xl bg-purple-950/20 border border-purple-800/40 text-purple-200 text-xs flex items-start space-x-2.5">
+                          <Info className="w-4 h-4 text-purple-400 mt-0.5 flex-shrink-0" />
+                          <div className="leading-relaxed">
+                            <span className="font-semibold text-purple-300 mr-1 font-mono uppercase">Defensive Boundary:</span>
+                            <span className="text-purple-200/90">{currentWindow.rag.limitations}</span>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Right 5 cols: MITRE Description & Alternative Candidates */}
+                    <div className="lg:col-span-5 flex flex-col justify-between space-y-4">
+                      {/* MITRE ATT&CK Description */}
+                      <div className="p-4 rounded-xl bg-white/[0.02] border border-white/5 flex-1 flex flex-col">
+                        <div className="flex justify-between items-center mb-2">
+                          <div className="text-[11px] font-mono uppercase tracking-wider text-slate-400">
+                            ATT&CK Technique Profile
+                          </div>
+                          <a
+                            href={`https://attack.mitre.org/techniques/${currentWindow.rag.technique_id.replace('.', '/')}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-[11px] font-mono text-cyan-400 hover:text-cyan-300 flex items-center space-x-1"
+                          >
+                            <span>MITRE DOCS</span>
+                            <ExternalLink className="w-3 h-3" />
+                          </a>
+                        </div>
+                        <p className="text-[12px] text-slate-300 leading-relaxed font-sans line-clamp-6">
+                          {currentWindow.rag.mitre_description || "No official MITRE description available for this technique."}
+                        </p>
+                      </div>
+
+                      {/* Candidate Techniques */}
+                      {currentWindow.rag.candidates && currentWindow.rag.candidates.length > 1 && (
+                        <div className="p-3.5 rounded-xl bg-white/[0.02] border border-white/5 space-y-2">
+                          <div className="text-[11px] font-mono uppercase tracking-wider text-slate-400">
+                            Ranked Candidate Pool (FAISS + Reranking)
+                          </div>
+                          <div className="space-y-1.5">
+                            {currentWindow.rag.candidates.slice(1, 4).map((cand, idx) => (
+                              <div
+                                key={idx}
+                                className="flex items-center justify-between text-xs px-2.5 py-1.5 rounded-lg bg-white/[0.02] border border-white/5 font-mono"
+                              >
+                                <div className="flex items-center space-x-2 truncate">
+                                  <span className="text-slate-400 text-[10px]">#{cand.rank}</span>
+                                  <span className="text-emerald-400 font-semibold">{cand.technique_id}</span>
+                                  <span className="text-slate-300 truncate text-[11px]">{cand.technique_name}</span>
+                                </div>
+                                <span className="text-slate-400 text-[11px] ml-2 flex-shrink-0">
+                                  {cand.confidence !== undefined ? `${(cand.confidence * 100).toFixed(0)}%` : ''}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
             </>
           )}
 

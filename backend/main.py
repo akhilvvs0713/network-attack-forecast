@@ -20,6 +20,7 @@ from .model import (
     build_agg_names,
     MITRE_NAMES,
 )
+from mitre_rag.retrieval.rag_pipeline import run_rag
 
 app = FastAPI(title="NCIIPC Cyber World Model Defense API")
 
@@ -390,11 +391,53 @@ def get_scenario_step(scenario_id: str, step_idx: int):
     if step_idx < 0 or step_idx >= len(windows):
         raise HTTPException(status_code=400, detail="Step out of range")
 
+    cur_win = dict(windows[step_idx])
+    # Enrich with evidence-grounded MITRE ATT&CK RAG analysis
+    try:
+        cur_win["rag"] = run_rag({**cur_win, "metadata": data[scenario_id].get("metadata", {})})
+    except Exception as e:
+        print(f"[warn] RAG enrichment failed for step {step_idx}: {e}")
+        cur_win["rag"] = None
+
     return {
         "metadata": data[scenario_id]["metadata"],
-        "current_window": windows[step_idx],
+        "current_window": cur_win,
         "total_steps": len(windows),
     }
+
+
+@app.get("/api/scenario/{scenario_id}/step/{step_idx}/rag")
+def get_scenario_step_rag(scenario_id: str, step_idx: int):
+    """
+    Dedicated structured MITRE ATT&CK RAG endpoint for a scenario step.
+    Returns technique identification, tactic, calibrated confidence, reason,
+    evidence, description, and defensive limitations.
+    """
+    data = load_data()
+    if scenario_id not in data:
+        raise HTTPException(status_code=404, detail="Scenario not found")
+
+    windows = data[scenario_id]["windows"]
+    if len(windows) == 0:
+        raise HTTPException(status_code=404, detail="No windows available in this scenario")
+
+    if step_idx < 0 or step_idx >= len(windows):
+        raise HTTPException(status_code=400, detail="Step out of range")
+
+    current_window = windows[step_idx]
+    rag_input = dict(current_window)
+    rag_input["metadata"] = data[scenario_id].get("metadata", {})
+    return run_rag(rag_input)
+
+
+@app.post("/api/rag/explain")
+def explain_telemetry_rag(payload: Dict):
+    """
+    On-demand MITRE ATT&CK RAG analysis for arbitrary telemetry or LSTM window payload.
+    """
+    if not payload:
+        raise HTTPException(status_code=400, detail="Empty payload provided")
+    return run_rag(payload)
 
 
 # ─── Real inference on an uploaded CICFlowMeter-style CSV ──────────────────
