@@ -235,7 +235,7 @@ async def redis_stream_consumer():
                     num_complete = len(states)
                     scenario_entry["metadata"]["warmup_count"] = min(num_complete, _seq_len)
 
-                    if num_complete >= _seq_len:
+                    if num_complete > 0:
                         # Prevent duplicate inference
                         latest_window_ts = timestamps[-1]
 
@@ -272,16 +272,6 @@ async def redis_stream_consumer():
                                 scenario_entry["metadata"]["rows_ingested"] = len(recent_flows)
                                 scenario_entry["metadata"]["attack_windows_detected"] = n_attack
                                 scenario_entry["windows"] = merged_windows
-
-                                # Trigger blockchain audit asynchronously
-                                import backend.blockchain_adapter as blockchain
-                                for w in windows:
-                                    if w.get("current_risk", 0.0) >= _best_threshold:
-                                        # Ensure event_id exists
-                                        if "event_id" not in w:
-                                            import uuid
-                                            w["event_id"] = str(uuid.uuid4())
-                                        asyncio.create_task(blockchain.log_security_event_async(w))
 
                                 print(f"[Live Inference] Inferred windows. Total history: {len(merged_windows)}", flush=True)
                     else:
@@ -568,17 +558,13 @@ def _format_horizon(k: int) -> str:
 
 
 def _scale_sequence(seq: np.ndarray, missing_feature_indices: list) -> np.ndarray:
-    n_feat = len(_feature_cols)
     seq_s = signed_log1p(seq.astype(np.float64))
     seq_sc = _scaler.transform(seq_s).astype(np.float32)
+    # Crucial Fix: Zero out missing features AFTER scaling, so they don't get 
+    # pushed to massive negative values by the scaler's mean subtraction.
+    for idx in missing_feature_indices:
+        seq_sc[:, idx] = 0.0
     seq_sc = np.clip(seq_sc, -3.0, 3.0)
-    # Zero out columns for features absent from the uploaded CSV, across
-    # each of the 4 aggregation blocks (mean/std/min/max).
-    for m_idx in missing_feature_indices:
-        for agg_offset in range(4):
-            col_idx = agg_offset * n_feat + m_idx
-            if col_idx < seq_sc.shape[1]:
-                seq_sc[:, col_idx] = 0.0
     return seq_sc
 
 
@@ -654,12 +640,18 @@ def _run_model_inference(
 ) -> List[Dict]:
     windows_out = []
 
-    max_i = len(states) - _seq_len
-    if is_live:
-        max_i = len(states) - _seq_len + 1
-
-    for i in range(max_i):
-        seq = states[i : i + _seq_len]
+    for i in range(len(states)):
+        # To get the prediction for window i, we use the sequence up to i.
+        start_idx = max(0, i - _seq_len + 1)
+        seq = states[start_idx : i + 1]
+        
+        has_enough_history = (len(seq) == _seq_len)
+        
+        if len(seq) < _seq_len:
+            pad_size = _seq_len - len(seq)
+            pad_states = np.repeat(seq[0:1], pad_size, axis=0)
+            seq = np.vstack([pad_states, seq])
+            
         seq_sc = _scale_sequence(seq, missing_feature_indices)
         X_t = torch.tensor(seq_sc).unsqueeze(0).to(device)
 
@@ -675,10 +667,10 @@ def _run_model_inference(
         mse_val = None
         z_val = None
 
-        has_true_future = (i + _seq_len < len(states))
+        has_true_future = (i + 1 < len(states))
 
         if _benign_mse_baseline is not None and has_true_future:
-            true_future = states[i + _seq_len].astype(np.float64)
+            true_future = states[i + 1].astype(np.float64)
             true_future_sc = _scaler.transform(
                 signed_log1p(true_future).reshape(1, -1)
             )[0]
@@ -692,21 +684,17 @@ def _run_model_inference(
             anomaly_score = 1 / (1 + np.exp(-(z_val - 3.0)))
             # Removed current_risk = max(attack_head_prob, anomaly_score)
 
-        # Forward-looking trajectory (Cell 10 style k-step forecast).
-        trajectory = _k_step_trajectory(pred_state, atk_log, mitre_log, hc)
-
         if current_risk < _best_threshold:
             mitre_cls = 0
 
-        if has_true_future:
-            ts_str = timestamps[i + _seq_len].strftime("%H:%M:%S")
-            fl_count = counts[i + _seq_len]
+        # Only generate a genuine k-step trajectory forecast if we have the required 5-window context
+        if has_enough_history:
+            trajectory = _k_step_trajectory(pred_state, atk_log, mitre_log, hc)
         else:
-            # We are predicting the future window
-            last_ts = timestamps[i + _seq_len - 1]
-            next_ts = last_ts + pd.Timedelta(_window_size)
-            ts_str = next_ts.strftime("%H:%M:%S")
-            fl_count = 0
+            trajectory = []
+
+        ts_str = timestamps[i].strftime("%H:%M:%S")
+        fl_count = counts[i]
 
         windows_out.append(
             {
@@ -820,15 +808,6 @@ async def upload_csv(file: UploadFile = File(...)):
         **scenario_entry,
     }
 
-
-@app.get("/api/audit/verify/{event_id}")
-async def verify_audit_event(event_id: str):
-    import backend.blockchain_adapter as blockchain
-    result = await blockchain.verify_event_async(event_id)
-    if result.get("status") == "NOT_FOUND":
-        from fastapi import HTTPException
-        raise HTTPException(status_code=404, detail="Event not found off-chain")
-    return result
 
 if __name__ == "__main__":
     import uvicorn
