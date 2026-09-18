@@ -13,7 +13,7 @@ from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 
 from .model import (
-    TGAT_WorldModel,
+    LSTMWorldModel,
     ManualScaler,
     signed_log1p,
     normalize_col,
@@ -39,8 +39,8 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # ─── Load trained checkpoint once at startup ───────────────────────────────
 _checkpoint = None
+_model: Optional[LSTMWorldModel] = None
 _scaler: Optional[ManualScaler] = None
-_model: Optional[TGAT_WorldModel] = None
 _feature_cols: List[str] = []
 _seq_len: int = 5
 _best_threshold: float = 0.5
@@ -72,18 +72,12 @@ def _load_checkpoint():
     _window_size = cfg.get("window_size", "1min")
     _agg_names = build_agg_names(_feature_cols)
 
-    model = TGAT_WorldModel(
+    model = LSTMWorldModel(
         state_dim=state_dim,
         hidden_size=ckpt["hidden_size"],
         num_layers=ckpt["num_layers"],
     )
-    
-    # Handle DataParallel 'module.' prefix if it exists in the saved checkpoint
-    state_dict = ckpt["model_state_dict"]
-    if all(k.startswith("module.") for k in state_dict.keys()):
-        state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
-        
-    model.load_state_dict(state_dict)
+    model.load_state_dict(ckpt["model_state_dict"])
     model.to(device)
     model.eval()
 
