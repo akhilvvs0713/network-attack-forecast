@@ -17,7 +17,7 @@ import torch.nn as nn
 MITRE_NAMES = {
     0: "Benign",
     1: "Credential Access (TA0006)",
-    2: "DoS Impact (TA0040)",
+    2: "DoS Impact (TA0040)",                       
     3: "DDoS Impact (TA0040)",
     4: "Web Exploit (TA0001)",
     5: "Lateral Movement (TA0008)",
