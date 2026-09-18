@@ -603,21 +603,17 @@ def _run_model_inference(
 ) -> List[Dict]:
     windows_out = []
 
-    max_i = len(states) - _seq_len
-    if is_live:
-        max_i = max(1, len(states) - _seq_len + 1)
-
-    for i in range(max_i):
-        if len(states) < _seq_len:
-            pad_size = _seq_len - len(states)
-            pad_states = np.repeat(states[0:1], pad_size, axis=0)
-            seq = np.vstack([pad_states, states])
-            last_valid_idx = len(states) - 1
-            has_true_future = False
-        else:
-            seq = states[i : i + _seq_len]
-            last_valid_idx = i + _seq_len - 1
-            has_true_future = (i + _seq_len < len(states))
+    for i in range(len(states)):
+        # To get the prediction for window i, we use the sequence up to i.
+        start_idx = max(0, i - _seq_len + 1)
+        seq = states[start_idx : i + 1]
+        
+        has_enough_history = (len(seq) == _seq_len)
+        
+        if len(seq) < _seq_len:
+            pad_size = _seq_len - len(seq)
+            pad_states = np.repeat(seq[0:1], pad_size, axis=0)
+            seq = np.vstack([pad_states, seq])
             
         seq_sc = _scale_sequence(seq, missing_feature_indices)
         X_t = torch.tensor(seq_sc).unsqueeze(0).to(device)
@@ -630,11 +626,14 @@ def _run_model_inference(
         mitre_cls = int(mitre_log.argmax(dim=1).item())
 
         current_risk = attack_head_prob
-        calibrated_mse = None
+        anomaly_score = None
         mse_val = None
+        z_val = None
+
+        has_true_future = (i + 1 < len(states))
 
         if _benign_mse_baseline is not None and has_true_future:
-            true_future = states[i + _seq_len].astype(np.float64)
+            true_future = states[i + 1].astype(np.float64)
             true_future_sc = _scaler.transform(
                 signed_log1p(true_future).reshape(1, -1)
             )[0]
@@ -642,27 +641,23 @@ def _run_model_inference(
             mse_val = float(
                 np.mean((pred_state.cpu().numpy().flatten() - true_future_sc) ** 2)
             )
-            z = (mse_val - _benign_mse_baseline["mean"]) / (
+            z_val = (mse_val - _benign_mse_baseline["mean"]) / (
                 _benign_mse_baseline["std"] + 1e-8
             )
-            calibrated_mse = 1 / (1 + np.exp(-(z - 3.0)))
-            current_risk = max(attack_head_prob, calibrated_mse)
-
-        # Forward-looking trajectory (Cell 10 style k-step forecast).
-        trajectory = _k_step_trajectory(pred_state, atk_log, mitre_log, hc)
+            anomaly_score = 1 / (1 + np.exp(-(z_val - 3.0)))
+            # Removed current_risk = max(attack_head_prob, anomaly_score)
 
         if current_risk < _best_threshold:
             mitre_cls = 0
 
-        if has_true_future:
-            ts_str = timestamps[last_valid_idx + 1].strftime("%H:%M:%S")
-            fl_count = counts[last_valid_idx + 1]
+        # Only generate a genuine k-step trajectory forecast if we have the required 5-window context
+        if has_enough_history:
+            trajectory = _k_step_trajectory(pred_state, atk_log, mitre_log, hc)
         else:
-            # We are predicting the future window
-            last_ts = timestamps[last_valid_idx]
-            next_ts = last_ts + pd.Timedelta(_window_size)
-            ts_str = next_ts.strftime("%H:%M:%S")
-            fl_count = 0
+            trajectory = []
+
+        ts_str = timestamps[i].strftime("%H:%M:%S")
+        fl_count = counts[i]
 
         windows_out.append(
             {
@@ -670,18 +665,21 @@ def _run_model_inference(
                 "timestamp": ts_str,
                 "flow_count": fl_count,
                 "current_risk": round(float(current_risk), 4),
+                "anomaly_score": round(float(anomaly_score), 4) if anomaly_score is not None else None,
                 "current_stage": MITRE_NAMES.get(mitre_cls, "Unknown"),
                 "trajectory": trajectory,
                 "shap_features": shap_features,
                 # TEMPORARY diagnostics — remove once current_risk is verified.
                 "_debug": {
                     "attack_head_prob": round(float(attack_head_prob), 4),
-                    "calibrated_mse": (
-                        round(float(calibrated_mse), 4)
-                        if calibrated_mse is not None
+                    "raw_mse": round(mse_val, 6) if mse_val is not None else None,
+                    "z": round(float(z_val), 4) if z_val is not None else None,
+                    "anomaly_score": (
+                        round(float(anomaly_score), 4)
+                        if anomaly_score is not None
                         else None
                     ),
-                    "raw_mse": round(mse_val, 6) if mse_val is not None else None,
+                    "current_risk": round(float(current_risk), 4),
                     "benign_mse_baseline": _benign_mse_baseline,
                 },
             }
